@@ -1,0 +1,14 @@
+{
+  "name": "BaladeEnChariot",
+  "tree": {
+    "$className": "DataModel",
+    "ServerScriptService": {
+      "$path": "src"
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "$path": "client"
+      }
+    }
+  }
+}

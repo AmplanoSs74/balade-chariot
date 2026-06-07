@@ -1,0 +1,15 @@
+# --- Fichiers de place Roblox (binaires : chacun a la sienne, evite les conflits) ---
+*.rbxl
+*.rbxlx
+*.rbxl.lock
+*.rbxlx.lock
+
+# --- Sauvegardes / temporaires / outils locaux ---
+*.bak
+*.bak_*
+luau-bin/
+Nouveau dossier/
+
+# --- OS ---
+Thumbs.db
+.DS_Store
