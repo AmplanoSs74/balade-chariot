@@ -79,8 +79,10 @@ local FRICTION    = 16
 local SAFE_GENTLE = 58
 local SAFE_SHARP  = 36
 local DERAIL_MARGIN = 1.12
-local LOOP_GRAVITY   = 20   -- looping : force qui te ralentit en montant (BAS = le petit chariot passe)
-local WORLD_GRAVITY  = 13   -- gravite douce sur tout le relief (montees ralentissent, descentes accelerent)
+local LOOP_GRAVITY   = 30   -- looping : force qui te ralentit en montant (la descente AVANT donne deja l'elan)
+local WORLD_GRAVITY  = 80   -- GRAVITE forte facon cart-ride : DESCENTES = ca FONCE (le feeling). (Roblox de base = 196.2)
+local BASE_CLIMB     = 0.6  -- capacite de MONTEE de base (TOUS chariots) : reduit la gravite en MONTEE pour que le
+                            -- chariot grimpe sans caler (la DESCENTE garde la gravite pleine). Meilleur chariot = grimpe encore mieux.
 local LOOP_MIN_SPEED = 9    -- looping : sous cette vitesse dans le haut = on tombe
 -- DECOLLAGE : au sommet d'une bosse la voie pique vers le bas ; trop vite = le chariot
 -- ne suit plus la courbe et s'envole. Plus LAUNCH_FORCE est BAS, plus ca decolle facilement.
@@ -1496,58 +1498,54 @@ local function buildHub()
 		return part
 	end
 
-	-- ---- SOL (GRAND) : dalle + damier + bordures neon ----
-	hp(Vector3.new(98, 2, 96), CFrame.new(0, -3.4, 44), FLB)
-	for ix = -5, 5 do
+	-- ---- SOL (GRAND, agrandi) : dalle + damier + bordures neon ----
+	local HW = 62               -- demi-largeur du hub (avant 49 -> plus grand)
+	local FZ, BZ = -4, 92
+	local CZ, D = (FZ + BZ) / 2, BZ - FZ
+	hp(Vector3.new(HW * 2 + 2, 2, D), CFrame.new(0, -3.4, CZ), FLB)
+	for ix = -7, 7 do
 		for iz = 0, 10 do
 			if (ix + iz) % 2 == 0 then
 				hp(Vector3.new(8.6, 0.3, 8.6), CFrame.new(ix * 8.7, -2.3, 4 + iz * 8.7), FLA)
 			end
 		end
 	end
-	hp(Vector3.new(98, 0.5, 1.4), CFrame.new(0, -2.1, -3.5), ACC, Enum.Material.Neon)
-	hp(Vector3.new(98, 0.5, 1.4), CFrame.new(0, -2.1, 91.5), ACC, Enum.Material.Neon)
-	hp(Vector3.new(1.4, 0.5, 96), CFrame.new(-48.5, -2.1, 44), ACC, Enum.Material.Neon)
-	hp(Vector3.new(1.4, 0.5, 96), CFrame.new( 48.5, -2.1, 44), ACC, Enum.Material.Neon)
+	hp(Vector3.new(HW * 2 + 2, 0.5, 1.4), CFrame.new(0, -2.1, FZ + 0.5), ACC, Enum.Material.Neon)
+	hp(Vector3.new(HW * 2 + 2, 0.5, 1.4), CFrame.new(0, -2.1, BZ - 0.5), ACC, Enum.Material.Neon)
+	hp(Vector3.new(1.4, 0.5, D), CFrame.new(-(HW + 0.5), -2.1, CZ), ACC, Enum.Material.Neon)
+	hp(Vector3.new(1.4, 0.5, D), CFrame.new(HW + 0.5, -2.1, CZ), ACC, Enum.Material.Neon)
 
-	-- ---- GRILLE GOTHIQUE (enfer) : barreaux noirs tout autour de la plateforme ----
+	-- ---- GRILLE GOTHIQUE (enfer) ----
 	if hell then
 		local bar = Color3.fromRGB(26, 20, 20)
-		for k = 0, 16 do
-			local fx = -48 + k * 6
-			hp(Vector3.new(0.4, 4.5, 0.4), CFrame.new(fx, 0.3, -3.5), bar, Enum.Material.Metal)
-			hp(Vector3.new(0.4, 4.5, 0.4), CFrame.new(fx, 0.3, 91.5), bar, Enum.Material.Metal)
+		for fx = -HW, HW, 6 do
+			hp(Vector3.new(0.4, 4.5, 0.4), CFrame.new(fx, 0.3, FZ + 0.5), bar, Enum.Material.Metal)
+			hp(Vector3.new(0.4, 4.5, 0.4), CFrame.new(fx, 0.3, BZ - 0.5), bar, Enum.Material.Metal)
 		end
-		for k = 0, 15 do
-			local fz = -3 + k * 6
-			hp(Vector3.new(0.4, 4.5, 0.4), CFrame.new(-48.5, 0.3, fz), bar, Enum.Material.Metal)
-			hp(Vector3.new(0.4, 4.5, 0.4), CFrame.new( 48.5, 0.3, fz), bar, Enum.Material.Metal)
+		for fz = FZ + 1, BZ - 1, 6 do
+			hp(Vector3.new(0.4, 4.5, 0.4), CFrame.new(-(HW + 0.5), 0.3, fz), bar, Enum.Material.Metal)
+			hp(Vector3.new(0.4, 4.5, 0.4), CFrame.new(HW + 0.5, 0.3, fz), bar, Enum.Material.Metal)
 		end
-		-- rail haut de la grille (4 cotes)
-		hp(Vector3.new(97, 0.4, 0.4), CFrame.new(0, 2, -3.5), bar, Enum.Material.Metal)
-		hp(Vector3.new(97, 0.4, 0.4), CFrame.new(0, 2, 91.5), bar, Enum.Material.Metal)
-		hp(Vector3.new(0.4, 0.4, 95), CFrame.new(-48.5, 2, 44), bar, Enum.Material.Metal)
-		hp(Vector3.new(0.4, 0.4, 95), CFrame.new( 48.5, 2, 44), bar, Enum.Material.Metal)
+		hp(Vector3.new(HW * 2, 0.4, 0.4), CFrame.new(0, 2, FZ + 0.5), bar, Enum.Material.Metal)
+		hp(Vector3.new(HW * 2, 0.4, 0.4), CFrame.new(0, 2, BZ - 0.5), bar, Enum.Material.Metal)
+		hp(Vector3.new(0.4, 0.4, D), CFrame.new(-(HW + 0.5), 2, CZ), bar, Enum.Material.Metal)
+		hp(Vector3.new(0.4, 0.4, D), CFrame.new(HW + 0.5, 2, CZ), bar, Enum.Material.Metal)
 	end
 
-	-- ---- PILIERS hauts + lampes + VERRIERE ----
-	for _, px in ipairs({ -44, 44 }) do
+	-- ---- PILIERS + lampes + VERRIERE ----
+	for _, px in ipairs({ -(HW - 6), HW - 6 }) do
 		for _, pz in ipairs({ 4, 44, 84 }) do
 			hp(Vector3.new(3, 26, 3), CFrame.new(px, 9, pz), STONE)
-			-- haut du pilier lumineux = la lampe (plus de "boule jaune" qui flotte)
 			local cap = hp(Vector3.new(5, 1.6, 5), CFrame.new(px, 21, pz), ACC, Enum.Material.Neon)
 			local pl = Instance.new("PointLight"); pl.Range = 30; pl.Brightness = 2.4
 			pl.Color = hell and Color3.fromRGB(255, 150, 70) or Color3.fromRGB(255, 240, 210); pl.Parent = cap
-			if hell then   -- tourelle a flamme (comme la ref)
-				local f = Instance.new("Fire"); f.Size = 13; f.Heat = 12; f.Color = Color3.fromRGB(255,150,45); f.SecondaryColor = Color3.fromRGB(255,70,15); f.Parent = cap
-			end
+			if hell then local f = Instance.new("Fire"); f.Size = 13; f.Heat = 12; f.Color = Color3.fromRGB(255, 150, 45); f.SecondaryColor = Color3.fromRGB(255, 70, 15); f.Parent = cap end
 		end
 	end
-	hp(Vector3.new(100, 1.6, 98), CFrame.new(0, 22, 44), Color3.fromRGB(38, 42, 58))
-	hp(Vector3.new(94, 0.5, 92), CFrame.new(0, 22.9, 44), ACC, Enum.Material.Neon)
-	-- mur du fond
-	hp(Vector3.new(98, 28, 1.6), CFrame.new(0, 8, 91.7), STONE)
-	hp(Vector3.new(98, 0.7, 1.8), CFrame.new(0, 22, 91.7), ACC, Enum.Material.Neon)
+	hp(Vector3.new(HW * 2 + 4, 1.6, D + 4), CFrame.new(0, 22, CZ), Color3.fromRGB(38, 42, 58))
+	hp(Vector3.new(HW * 2 - 4, 0.5, D - 4), CFrame.new(0, 22.9, CZ), ACC, Enum.Material.Neon)
+	hp(Vector3.new(HW * 2, 28, 1.6), CFrame.new(0, 8, BZ - 0.3), STONE)
+	hp(Vector3.new(HW * 2, 0.7, 1.8), CFrame.new(0, 22, BZ - 0.3), ACC, Enum.Material.Neon)
 
 	-- ---- PANNEAUX (texte court, centre, lisible) ----
 	sign(CFrame.new(0, 15, 6), 54, 9, "🚂 BALADE EN CHARIOT", ACC, Color3.fromRGB(24, 28, 42))
@@ -1603,31 +1601,27 @@ local function buildHub()
 	sp.Color = ACC; sp.Material = Enum.Material.Neon; sp.Transparency = 0.4
 	sp.Parent = trackFolder
 
-	-- ---- PORTAIL DEPART (JOUER) cote chariot ----
-	hp(Vector3.new(2.4, 15, 2.4), CFrame.new(-11, 4, 16), GOLD, Enum.Material.Neon)
-	hp(Vector3.new(2.4, 15, 2.4), CFrame.new( 11, 4, 16), GOLD, Enum.Material.Neon)
-	hp(Vector3.new(26, 3, 2.4), CFrame.new(0, 11, 16), GOLD, Enum.Material.Neon)
-	sign(CFrame.new(0, 6.5, 17), 18, 4.5, "▶ JOUER", Color3.fromRGB(190, 255, 205), Color3.fromRGB(20, 60, 30))
-	local pad = hp(Vector3.new(20, 0.6, 8), CFrame.new(0, -2.4, 18), Color3.fromRGB(70, 235, 110), Enum.Material.Neon)
-	local cd = {}
-	pad.Touched:Connect(function(hit)
-		local plr = Players:GetPlayerFromCharacter(hit.Parent)
-		if plr and not cd[plr] then cd[plr] = true; goToCart(plr); task.delay(2.5, function() cd[plr] = nil end) end
-	end)
-	-- ---- PLOT "FAIRE APPARAITRE MON CHARIOT" (multijoueur) : un socle lumineux + ProximityPrompt.
-	-- Chaque joueur appuie pour faire apparaitre SON chariot et y monter (le pad ▶ JOUER marche aussi).
-	local spawnPad = hp(Vector3.new(7, 1.4, 7), CFrame.new(-22, -1.9, 18), Color3.fromRGB(120, 230, 255), Enum.Material.Neon)
-	local spLight = Instance.new("PointLight"); spLight.Range = 16; spLight.Brightness = 2; spLight.Color = Color3.fromRGB(120, 220, 255); spLight.Parent = spawnPad
-	local prompt = Instance.new("ProximityPrompt")
-	prompt.ActionText = "Faire apparaître mon chariot"
-	prompt.ObjectText = "Chariot"
-	prompt.HoldDuration = 0
-	prompt.MaxActivationDistance = 14
-	prompt.RequiresLineOfSight = false
-	prompt.Parent = spawnPad
-	prompt.Triggered:Connect(function(plr)
-		if plr then spawnPlayerCart(plr) end
-	end)
+	-- ---- PADS D'APPARITION DU CHARIOT (style ref : on monte sur un pad colore -> son chariot apparait) ----
+	sign(CFrame.new(0, 9, 6), 52, 5.5, "🚂 MONTE SUR UN PAD POUR FAIRE APPARAÎTRE TON CHARIOT", Color3.new(1, 1, 1), Color3.fromRGB(20, 24, 38))
+	-- arche doree au-dessus de la zone de spawn
+	hp(Vector3.new(2.4, 16, 2.4), CFrame.new(-28, 4.5, 19), GOLD, Enum.Material.Neon)
+	hp(Vector3.new(2.4, 16, 2.4), CFrame.new( 28, 4.5, 19), GOLD, Enum.Material.Neon)
+	hp(Vector3.new(60, 3, 2.4), CFrame.new(0, 12, 19), GOLD, Enum.Material.Neon)
+	-- 3 pads colores : monter dessus = faire apparaitre son chariot (+ s'y asseoir)
+	local spawnCols = { { -18, Color3.fromRGB(90, 220, 120) }, { 0, Color3.fromRGB(90, 200, 255) }, { 18, Color3.fromRGB(225, 120, 235) } }
+	local cdpad = {}
+	for _, e in ipairs(spawnCols) do
+		local px, col = e[1], e[2]
+		hp(Vector3.new(10.6, 1, 10.6), CFrame.new(px, -2.9, 16), Color3.fromRGB(16, 16, 22), Enum.Material.SmoothPlastic)
+		local pad = hp(Vector3.new(8.8, 1.4, 8.8), CFrame.new(px, -2.4, 16), col, Enum.Material.Neon)
+		local pl = Instance.new("PointLight"); pl.Range = 16; pl.Brightness = 2.6; pl.Color = col; pl.Parent = pad
+		hp(Vector3.new(1.2, 6, 1.2), CFrame.new(px, 1, 16), col, Enum.Material.Neon)        -- mat
+		hp(Vector3.new(4, 1.2, 1.2), CFrame.new(px, 3.4, 16), col, Enum.Material.Neon)      -- barre (fleche)
+		pad.Touched:Connect(function(hit)
+			local plr = Players:GetPlayerFromCharacter(hit.Parent)
+			if plr and not cdpad[plr] then cdpad[plr] = true; spawnPlayerCart(plr); task.delay(2.5, function() cdpad[plr] = nil end) end
+		end)
+	end
 end
 buildHub()
 
@@ -2891,7 +2885,7 @@ local function stepCart(pc, dt)
 		-- + boosts de la course). En descente, la gravite reste (l'elan est un atout).
 		local grav = WORLD_GRAVITY
 		if cf.LookVector.Y > 0 then
-			local power = math.min(0.75, (CARTS[state.cartTier].grip + state.boostGrip) * CLIMB_ASSIST)
+			local power = math.min(0.85, BASE_CLIMB + (CARTS[state.cartTier].grip + state.boostGrip) * CLIMB_ASSIST)
 			grav = grav * (1 - power)
 		end
 		local ns = state.speed - grav * cf.LookVector.Y * dt
