@@ -37,7 +37,41 @@ local RIDE_HEIGHT    = 2.4
 -- centrale en douceur sur les premiers studs. Offset 0 = voie principale (1er joueur).
 local START_LANE_OFFSETS = { 0, -13, 13, -26, 26 }   -- 5 voies de depart (1 bouton chacune) ; alignees aux boutons du hub
 local MERGE_DIST = 70
-local function laneFade(d, L) local sw = MERGE_DIST * 0.5; if d < sw then return 1 end; local x = math.clamp((MERGE_DIST - d) / (MERGE_DIST - sw), 0, 1); return x * x * (3 - 2 * x) end  -- voies PARALLELES puis aiguillage COURT a la fin (comme de vrais rails, pas un eventail)
+-- voies PARALLELES puis aiguillages SUCCESSIFS "en escalier" (comme une vraie sortie de gare :
+-- les voies exterieures rejoignent PLUS LOIN, une par une -> fini la toile d'araignee au merge).
+local function laneFade(d, L)
+	local md = MERGE_DIST + math.abs(L or 0) * 2   -- ±13 -> fusion vers 96, ±26 -> vers 122
+	local sw = md - 30                              -- aiguillage court (30 studs)
+	if d < sw then return 1 end
+	local x = math.clamp((md - d) / (md - sw), 0, 1)
+	return x * x * (3 - 2 * x)
+end
+-- GARES : chaque voie de depart a une APPROCHE qui serpente sur la plaque (distance NEGATIVE).
+-- GARE_DATA est (re)rempli par buildHub : [offsetVoie] = { gz, len, pts = {{z,x},...} tries par z }.
+GARE_DATA = {}   -- GLOBAL (cf. limite 200 locals)
+function laneStartDist(L)   -- GLOBAL : ou commence la course (negatif si la voie a une gare)
+	local g = L and GARE_DATA[L]
+	return g and -g.len or 0
+end
+function laneOffsetAt(L, d)   -- GLOBAL : decalage lateral de la voie a la distance d
+	L = L or 0
+	if d >= 0 then return L * laneFade(d, L) end
+	local g = GARE_DATA[L]
+	if not g then return L end
+	local z = math.clamp(-d, 1, g.gz)   -- d = -gz -> z = gz (la gare) ; d -> 0 -> z -> 1 (entree de voie)
+	local pts = g.pts
+	local lo = pts[1]
+	if z <= lo.z then return lo.x end
+	for i = 2, #pts do
+		local hi = pts[i]
+		if z <= hi.z then
+			local t = (hi.z - lo.z) > 1e-6 and (z - lo.z) / (hi.z - lo.z) or 0
+			return lo.x + (hi.x - lo.x) * t
+		end
+		lo = hi
+	end
+	return pts[#pts].x
+end
 
 MAX_SPEED   = 85   -- global (cf. limite 200 locals) ; ancienne base, remplacee par les CHARIOTS
 -- 10 CHARIOTS a acheter avec des pieces. Chacun : va plus vite (max ~ km/h), tient mieux
@@ -157,6 +191,7 @@ local ZONES = {
 	{ name = "Ville",    terrain = Enum.Material.Pavement,    bed = Color3.fromRGB(78,82,92) },    -- 2
 	{ name = "Montagne", terrain = Enum.Material.Rock,        bed = Color3.fromRGB(112,120,132) }, -- 3
 	{ name = "Paradis",  terrain = Enum.Material.Grass,       bed = Color3.fromRGB(120,205,120) }, -- 4
+	{ name = "Grotte",   terrain = Enum.Material.Slate,       bed = Color3.fromRGB(72, 66, 104) }, -- 5 (caverne a cristaux)
 }
 
 -- ORDRE DES MONDES : ENFER -> VILLE -> MONTAGNE -> PARADIS (l'ascension), puis on reboucle + dur.
@@ -164,6 +199,7 @@ local ZONES = {
 local WORLDS = {
 	-- cart = index du CHARIOT thematique de ce biome (Grotte=2 reserve au futur biome Grotte).
 	{ zone = 1, name = "ENFER",    seed = 101, cart = 1, accent = Color3.fromRGB(255,  90,  45) },
+	{ zone = 5, name = "GROTTE",   seed = 505, cart = 2, accent = Color3.fromRGB(110, 235, 255) },
 	{ zone = 2, name = "VILLE",    seed = 202, cart = 3, accent = Color3.fromRGB(120, 200, 255) },
 	{ zone = 3, name = "MONTAGNE", seed = 303, cart = 4, accent = Color3.fromRGB(175, 210, 255) },
 	{ zone = 4, name = "PARADIS",  seed = 404, cart = 5, accent = Color3.fromRGB(255, 235, 150) },
@@ -373,6 +409,12 @@ local function catmullRom(p0, p1, p2, p3, t)
 end
 
 local function renderAtDistance(d)
+	-- d NEGATIF = approche de gare : prolongement RECTILIGNE derriere le depart (sous la plaque).
+	-- Le serpentage lateral de l'approche est ajoute par laneOffsetAt (dans stepCart).
+	if d < 0 then
+		local c0, s0 = renderAtDistance(0)
+		return c0 * CFrame.new(0, 0, -d), s0
+	end
 	d = math.clamp(d, 0, TOTAL_DIST)
 	local seg = 1
 	while seg < NSEG and cumDist[seg+1] < d do
@@ -511,9 +553,10 @@ local function buildStartLanes()
 	local step = RAIL_STEP * 2
 	for _, L in ipairs(START_LANE_OFFSETS) do
 		if L ~= 0 then
+			local mdL = MERGE_DIST + math.abs(L) * 2   -- MEME formule que laneFade (fusion en escalier)
 			local d = 0
-			while d < MERGE_DIST - 1e-3 do
-				local d2 = math.min(d + step, MERGE_DIST)
+			while d < mdL - 1e-3 do
+				local d2 = math.min(d + step, mdL)
 				local f1 = (renderAtDistance(d)) * CFrame.new(0, -RIDE_HEIGHT, 0)
 				local f2 = (renderAtDistance(d2)) * CFrame.new(0, -RIDE_HEIGHT, 0)
 				local o1, o2 = L * laneFade(d, L), L * laneFade(d2, L)
@@ -553,7 +596,8 @@ for i = 1, NSEG do
 
 	-- ballast (+ traverses) ; on TAG les sections "phantom" pour les faire disparaitre en rythme
 	local isPhantom = segMeta[i].kind == "phantom"
-	local ballast = makePart(Vector3.new(TRACK_WIDTH, 0.6, L), segFrame * CFrame.new(0, -0.35, 0), z.bed, Enum.Material.Slate)
+	local ballast = makePart(Vector3.new(TRACK_WIDTH, 0.6, L), segFrame * CFrame.new(0, -0.35, 0), z.bed, Enum.Material.Plastic)
+	ballast.TopSurface = Enum.SurfaceType.Studs   -- style LEGO : chemin a plots le long de TOUTE la voie
 	if isPhantom then ballast:SetAttribute("Phantom", true); ballast.CanCollide = false end
 	-- traverses
 	for _, zoff in ipairs({ -len/4, len/4 }) do
@@ -700,7 +744,7 @@ end
 	obstacleBlades = {}
 	local lastObs = -1e9
 	for oseg = 14, NSEG - 5 do
-		if segMeta[oseg].kind == "straight" and renderNodes[oseg].UpVector.Y > 0.95 and cumDist[oseg] - lastObs > 650 then
+		if CURRENT_ZONE == 1 and segMeta[oseg].kind == "straight" and renderNodes[oseg].UpVector.Y > 0.95 and cumDist[oseg] - lastObs > 650 then
 			lastObs = cumDist[oseg]
 			local ocf = renderNodes[oseg]
 			makePart(Vector3.new(1.2, 11, 1.2), ocf * CFrame.new(-5.5, 5.5, 0), Color3.fromRGB(38, 30, 28), Enum.Material.Metal)
@@ -737,7 +781,7 @@ end
 	-- pointes Neon en feu) qui BALANCE en travers de la voie -> on passe quand la boule est sur le cote.
 	local lastChain = -1e9
 	for oseg = 24, NSEG - 5 do
-		if segMeta[oseg].kind == "straight" and renderNodes[oseg].UpVector.Y > 0.95 and cumDist[oseg] - lastChain > 720 then
+		if CURRENT_ZONE == 1 and segMeta[oseg].kind == "straight" and renderNodes[oseg].UpVector.Y > 0.95 and cumDist[oseg] - lastChain > 720 then
 			lastChain = cumDist[oseg]
 			local ocf = renderNodes[oseg]
 			makePart(Vector3.new(1.2, 13, 1.2), ocf * CFrame.new(-5.5, 6.5, 0), Color3.fromRGB(34, 28, 26), Enum.Material.Metal)
@@ -764,12 +808,47 @@ end
 		end
 	end
 
+	-- ANTI-STACK (grotte) : les pieges ne se posent JAMAIS a moins de 140 studs les uns des autres,
+	-- tous types confondus (sinon machoire + cristal + stalactite s'empilent au meme endroit).
+	local trapDists = {}
+	local function trapFree(dd)
+		for _, t in ipairs(trapDists) do
+			if math.abs(t - dd) < 140 then return false end
+		end
+		return true
+	end
+	-- CRISTAL PENDULAIRE (GROTTE) : meme mecanique de balancier que la boule de feu, mais une
+	-- pointe d'amethyste glacee qui brille - l'hostilite de la grotte appartient a la grotte.
+	local lastCrystal = -1e9
+	for oseg = 24, NSEG - 5 do
+		if CURRENT_ZONE == 5 and segMeta[oseg].kind == "straight" and renderNodes[oseg].UpVector.Y > 0.95 and cumDist[oseg] - lastCrystal > 640 and trapFree(cumDist[oseg]) then
+			lastCrystal = cumDist[oseg]
+			table.insert(trapDists, cumDist[oseg])
+			local ocf = renderNodes[oseg]
+			makePart(Vector3.new(1.2, 13, 1.2), ocf * CFrame.new(-5.5, 6.5, 0), Color3.fromRGB(56, 52, 78), Enum.Material.Slate)
+			makePart(Vector3.new(1.2, 13, 1.2), ocf * CFrame.new( 5.5, 6.5, 0), Color3.fromRGB(56, 52, 78), Enum.Material.Slate)
+			makePart(Vector3.new(13, 1.2, 1.2), ocf * CFrame.new(0, 13, 0), Color3.fromRGB(56, 52, 78), Enum.Material.Slate)
+			local axleCF = ocf * CFrame.new(0, 13, 0)
+			local bparts = {}
+			local function kpart(size, loc, color, mat)
+				local pp = makePart(size, axleCF * loc, color, mat); pp.CanCollide = false
+				table.insert(bparts, { part = pp, off = loc }); return pp
+			end
+			for li = 1, 4 do kpart(Vector3.new(0.9, 1.5, 0.5), CFrame.new(0, -1.6 - li * 1.5, 0), Color3.fromRGB(70, 66, 92), Enum.Material.Slate) end
+			local core = kpart(Vector3.new(3.4, 7.5, 3.4), CFrame.new(0, -10.5, 0) * CFrame.Angles(0, 0, math.rad(45)), Color3.fromRGB(178, 120, 255), Enum.Material.Neon)
+			kpart(Vector3.new(2.2, 5, 2.2), CFrame.new(1.8, -9.5, 0) * CFrame.Angles(0, 0, math.rad(25)), Color3.fromRGB(110, 235, 255), Enum.Material.Neon)
+			kpart(Vector3.new(2.2, 5, 2.2), CFrame.new(-1.8, -9.5, 0) * CFrame.Angles(0, 0, math.rad(-25)), Color3.fromRGB(110, 235, 255), Enum.Material.Neon)
+			local cpl = Instance.new("PointLight"); cpl.Range = 26; cpl.Brightness = 2.4; cpl.Color = Color3.fromRGB(178, 130, 255); cpl.Parent = core
+			table.insert(obstacleBlades, { parts = bparts, axle = axleCF, swing = true, off = lastCrystal % 6.28, amp = 1.2, freq = 1.7, dist = cumDist[oseg], msg = "💎 Le cristal t'a fauché !" })
+		end
+	end
+
 	-- GEYSERS DE LAVE : faille qui ROUGEOIE + pulse (telegraphe), puis COLONNE Neon qui JAILLIT sur
 	-- un timer. Etre dessus pendant l'eruption = projete en l'air. (cycle gere dans la boucle Heartbeat)
 	GEYSERS = {}
 	local lastGeyser = -1e9
 	for oseg = 18, NSEG - 5 do
-		if segMeta[oseg].kind == "straight" and renderNodes[oseg].UpVector.Y > 0.95 and cumDist[oseg] - lastGeyser > 560 then
+		if CURRENT_ZONE == 1 and segMeta[oseg].kind == "straight" and renderNodes[oseg].UpVector.Y > 0.95 and cumDist[oseg] - lastGeyser > 560 then
 			lastGeyser = cumDist[oseg]
 			local ocf = renderNodes[oseg]
 			local fault = makePart(Vector3.new(8, 0.5, 5.5), ocf * CFrame.new(0, 0.25, 0), Color3.fromRGB(36, 14, 10), Enum.Material.CrackedLava); fault.CanCollide = false
@@ -778,6 +857,71 @@ end
 			local cfire = Instance.new("Fire"); cfire.Size = 24; cfire.Heat = 12; cfire.Enabled = false; cfire.Color = Color3.fromRGB(255, 150, 40); cfire.SecondaryColor = Color3.fromRGB(255, 60, 12); cfire.Parent = col
 			local clight = Instance.new("PointLight"); clight.Range = 30; clight.Brightness = 0.5; clight.Color = Color3.fromRGB(255, 100, 36); clight.Parent = glow
 			table.insert(GEYSERS, { glow = glow, col = col, fire = cfire, light = clight, dist = cumDist[oseg], off = lastGeyser % 5.0 })
+		end
+	end
+
+	-- STALACTITES PIEGES (GROTTE uniquement) : une pointe rocheuse pend au-dessus de la voie,
+	-- TREMBLE et s'illumine (telegraphe), puis TOMBE d'un coup, puis remonte. (cycle : boucle TRAP)
+	STALAGS = {}
+	if CURRENT_ZONE == 5 then
+		local lastSt = -1e9
+		for oseg = 16, NSEG - 5 do
+			if segMeta[oseg].kind == "straight" and renderNodes[oseg].UpVector.Y > 0.95 and cumDist[oseg] - lastSt > 480 and trapFree(cumDist[oseg]) then
+				lastSt = cumDist[oseg]
+				table.insert(trapDists, cumDist[oseg])
+				local topCF = renderNodes[oseg] * CFrame.new(0, 26, 0)
+				local sparts = {}
+				local function spart(size, loc, color, mat)
+					local pp = makePart(size, topCF * loc, color, mat); pp.CanCollide = false
+					table.insert(sparts, { part = pp, off = loc }); return pp
+				end
+				spart(Vector3.new(4.6, 6, 4.6), CFrame.new(0, -3, 0), Color3.fromRGB(70, 66, 92), Enum.Material.Slate)
+				spart(Vector3.new(3, 6, 3), CFrame.new(0, -8, 0), Color3.fromRGB(82, 78, 108), Enum.Material.Slate)
+				spart(Vector3.new(1.6, 5, 1.6), CFrame.new(0, -12.5, 0), Color3.fromRGB(96, 90, 124), Enum.Material.Slate)
+				local tip = spart(Vector3.new(0.9, 2.6, 0.9), CFrame.new(0, -16, 0), Color3.fromRGB(140, 230, 255), Enum.Material.Neon)
+				local tl = Instance.new("PointLight"); tl.Range = 16; tl.Brightness = 1.2; tl.Color = Color3.fromRGB(140, 230, 255); tl.Parent = tip
+				table.insert(STALAGS, { parts = sparts, top = topCF, dist = cumDist[oseg], off = lastSt % 5.6, light = tl })
+			end
+		end
+	end
+
+	-- ROCHER ROULANT (GROTTE) : une boule de pierre traverse la voie en va-et-vient dans sa
+	-- gouttiere — on passe quand elle est de l'autre cote. + MACHOIRES DE PIERRE : deux blocs
+	-- qui se referment d'un coup sur la voie apres avoir tremble (telegraphe).
+	BOULDERS = {}
+	JAWS = {}
+	if CURRENT_ZONE == 5 then
+		local lastB = -1e9
+		for oseg = 20, NSEG - 5 do
+			if segMeta[oseg].kind == "straight" and renderNodes[oseg].UpVector.Y > 0.95 and cumDist[oseg] - lastB > 760 and trapFree(cumDist[oseg]) then
+				lastB = cumDist[oseg]
+				table.insert(trapDists, cumDist[oseg])
+				local ocf = renderNodes[oseg]
+				local gutter = makePart(Vector3.new(44, 0.5, 8), ocf * CFrame.new(0, -0.1, 0), Color3.fromRGB(58, 54, 80), Enum.Material.Slate)
+				gutter.CanCollide = false
+				local ball = makePart(Vector3.new(7, 7, 7), ocf * CFrame.new(-16, 3.4, 0), Color3.fromRGB(96, 90, 120), Enum.Material.Slate)
+				ball.Shape = Enum.PartType.Ball; ball.CanCollide = false
+				table.insert(BOULDERS, { ball = ball, base = ocf * CFrame.new(0, 3.4, 0), dist = cumDist[oseg], off = lastB % 6.28, amp = 17, freq = 1.1 })
+			end
+		end
+		local lastJ = -1e9
+		for oseg = 30, NSEG - 5 do
+			if segMeta[oseg].kind == "straight" and renderNodes[oseg].UpVector.Y > 0.95 and cumDist[oseg] - lastJ > 820 and trapFree(cumDist[oseg]) then
+				lastJ = cumDist[oseg]
+				table.insert(trapDists, cumDist[oseg])
+				local ocf = renderNodes[oseg]
+				local function jawSide(sx)
+					local parts = {}
+					local function jp(size, loc, color)
+						local pp = makePart(size, ocf * loc, color, Enum.Material.Slate); pp.CanCollide = false
+						table.insert(parts, { part = pp, off = loc })
+					end
+					jp(Vector3.new(3.2, 9, 6.5), CFrame.new(sx * 7.5, 4, 0), Color3.fromRGB(78, 72, 100))
+					jp(Vector3.new(1.4, 5.5, 5), CFrame.new(sx * 5.4, 3.4, 0), Color3.fromRGB(210, 210, 224))
+					return parts
+				end
+				table.insert(JAWS, { base = ocf, l = jawSide(-1), r = jawSide(1), dist = cumDist[oseg], off = lastJ % 7.0 })
+			end
 		end
 	end
 
@@ -798,6 +942,7 @@ local function buildTerrain()
 	-- ENFER : on rend la LAVE (CrackedLava) BRILLANTE comme la reference (sol orange ardent)
 	Terrain:SetMaterialColor(Enum.Material.CrackedLava, Color3.fromRGB(255, 100, 40))
 	Terrain:SetMaterialColor(Enum.Material.Basalt, Color3.fromRGB(108, 106, 113))   -- volcan = ROCHER GRIS (fort contraste avec la lave jaune, comme la ref)
+	Terrain:SetMaterialColor(Enum.Material.Slate, Color3.fromRGB(82, 76, 112))      -- GROTTE : roche violacee (seule la grotte utilise le terrain Slate)
 	-- La voie est SURELEVEE. Regle d'or : aucun relief ne doit toucher la voie (sinon
 	-- ca traverse / ca clignote). On ne place collines/montagnes/eau que LOIN de tous
 	-- les points de la voie (verif de distance) ; le sol reste plat et propre dessous.
@@ -1096,11 +1241,39 @@ local function glowFlower(pos)
 end
 
 -- props par zone (forte densite, varie) : index = monde (1 Enfer, 2 Ville, 3 Montagne, 4 Paradis)
+-- props GROTTE (zone 5) : stalagmite, cristal lumineux, champignon geant, rocher a pepites d'or
+local function caveStalag(gp)
+	local h = 8 + rng:NextNumber(0, 10)
+	part(Vector3.new(7, h, 7), CFrame.new(gp + Vector3.new(0, h / 2, 0)), Color3.fromRGB(66, 62, 90), Enum.Material.Slate)
+	part(Vector3.new(4.2, h * 0.8, 4.2), CFrame.new(gp + Vector3.new(rng:NextNumber(-0.6, 0.6), h + h * 0.4 - 0.6, 0)), Color3.fromRGB(84, 78, 112), Enum.Material.Slate)
+	part(Vector3.new(2, h * 0.55, 2), CFrame.new(gp + Vector3.new(0, h * 1.75 - 0.8, 0)), Color3.fromRGB(96, 90, 124), Enum.Material.Slate)
+end
+local function caveCrystal(gp)
+	local cols = { Color3.fromRGB(110, 235, 255), Color3.fromRGB(178, 120, 255), Color3.fromRGB(255, 120, 210) }
+	local cc = cols[rng:NextInteger(1, #cols)]
+	local main = part(Vector3.new(2.6, 8 + rng:NextNumber(0, 5), 2.6), CFrame.new(gp + Vector3.new(0, 4.5, 0)) * CFrame.Angles(rng:NextNumber(-0.3, 0.3), rng:NextNumber(0, 6.2), rng:NextNumber(-0.3, 0.3)), cc, Enum.Material.Neon)
+	part(Vector3.new(1.6, 5, 1.6), CFrame.new(gp + Vector3.new(2, 2, 0.6)) * CFrame.Angles(0.4, 1, 0.2), cc, Enum.Material.Neon)
+	local cl = Instance.new("PointLight"); cl.Range = 20; cl.Brightness = 1.2; cl.Color = cc; cl.Parent = main
+end
+local function caveMushroom(gp)
+	local hh = 6 + rng:NextNumber(0, 5)
+	part(Vector3.new(2.4, hh, 2.4), CFrame.new(gp + Vector3.new(0, hh / 2, 0)), Color3.fromRGB(214, 198, 178), Enum.Material.SmoothPlastic)
+	local cap = part(Vector3.new(hh * 1.3, hh * 0.55, hh * 1.3), CFrame.new(gp + Vector3.new(0, hh * 1.2, 0)), Color3.fromRGB(178, 120, 255), Enum.Material.Neon, BALL)
+	local ml = Instance.new("PointLight"); ml.Range = 16; ml.Brightness = 0.8; ml.Color = cap.Color; ml.Parent = cap
+end
+local function caveGoldRock(gp)
+	local r = part(Vector3.new(7, 5.5, 6), CFrame.new(gp + Vector3.new(0, 2.6, 0)) * CFrame.Angles(rng:NextNumber(0, 0.4), rng:NextNumber(0, 6.2), rng:NextNumber(0, 0.4)), Color3.fromRGB(74, 70, 96), Enum.Material.Slate)
+	for _ = 1, 3 do
+		part(Vector3.new(1.1, 1.1, 1.1), r.CFrame * CFrame.new(rng:NextNumber(-2.4, 2.4), rng:NextNumber(0.5, 2.4), rng:NextNumber(-2.2, 2.2)), Color3.fromRGB(255, 200, 60), Enum.Material.Metal)
+	end
+end
+
 local zoneProps = {
 	{ volcanoRock, lavaPool, hellSpike, fireColumn, hellSpike, volcanoRock, lavaPool, fireColumn },
 	{ building, streetLamp, building, building, streetLamp, building, building },
 	{ pine, snowyPine, peakRock, snowMound, iceSpike, rock, snowyPine, peakRock },
 	{ cloudPuff, goldPillar, glowFlower, tree, cloudPuff, glowFlower, goldPillar, flower },
+	{ caveStalag, caveCrystal, caveMushroom, caveStalag, caveCrystal, caveGoldRock, caveMushroom, caveGoldRock },   -- 5 GROTTE
 }
 
 -- buildDecorProps : pose les arbres/rochers/etc. du monde courant le long de la voie.
@@ -1126,19 +1299,19 @@ local function buildDecorProps()
 				if rng:NextNumber() < 0.32 then
 					local dist = 18 + rng:NextNumber(0, 16)
 					local gp = Vector3.new(cf.Position.X, 0, cf.Position.Z) + cf.RightVector * (dist * side)
-					if clearOfTrack(gp.X, gp.Z) then list[rng:NextInteger(1, #list)](gp) end
+					if list and #list > 0 and clearOfTrack(gp.X, gp.Z) then list[rng:NextInteger(1, #list)](gp) end
 				end
 				-- 2e plan : plus loin, pour la profondeur (moins souvent)
 				if rng:NextNumber() < 0.3 then
 					local dist = 32 + rng:NextNumber(0, 24)
 					local gp = Vector3.new(cf.Position.X, 0, cf.Position.Z) + cf.RightVector * (dist * side)
-					if clearOfTrack(gp.X, gp.Z) then list[rng:NextInteger(1, #list)](gp) end
+					if list and #list > 0 and clearOfTrack(gp.X, gp.Z) then list[rng:NextInteger(1, #list)](gp) end
 				end
 				-- 3e plan : arriere-plan LOINTAIN (profondeur + richesse), encore moins souvent
 				if rng:NextNumber() < 0.22 then
 					local dist = 62 + rng:NextNumber(0, 55)
 					local gp = Vector3.new(cf.Position.X, 0, cf.Position.Z) + cf.RightVector * (dist * side)
-					if clearOfTrack(gp.X, gp.Z) then list[rng:NextInteger(1, #list)](gp) end
+					if list and #list > 0 and clearOfTrack(gp.X, gp.Z) then list[rng:NextInteger(1, #list)](gp) end
 				end
 			end
 		end
@@ -1210,6 +1383,14 @@ local function backdrop(zi)
 		local H = 210
 		part(Vector3.new(220, H, 220), CFrame.new(lp + Vector3.new(0, H*0.3, 0)), Color3.fromRGB(94,102,116), Enum.Material.Rock, BALL)
 		part(Vector3.new(130, 76, 130), CFrame.new(lp + Vector3.new(0, H*0.72, 0)), Color3.fromRGB(240,248,255), Enum.Material.Snow, BALL)
+	elseif zi == 5 then        -- GROTTE : GEODE GEANTE (roche ronde + coeur de cristaux lumineux)
+		part(Vector3.new(190, 170, 190), CFrame.new(lp + Vector3.new(0, 30, 0)), Color3.fromRGB(70, 64, 96), Enum.Material.Slate, BALL)
+		for k = 0, 7 do
+			local ang = k * 0.785
+			local cc = (k % 2 == 0) and Color3.fromRGB(110, 235, 255) or Color3.fromRGB(178, 120, 255)
+			local cr = part(Vector3.new(9, 46 + (k % 3) * 14, 9), CFrame.new(lp + Vector3.new(math.cos(ang) * 52, 96 + (k % 3) * 8, math.sin(ang) * 52)) * CFrame.Angles(math.cos(ang) * 0.5, 0, math.sin(ang) * 0.5), cc, Enum.Material.Neon)
+			local gl = Instance.new("PointLight"); gl.Range = 44; gl.Brightness = 1.6; gl.Color = cc; gl.Parent = cr
+		end
 	else                       -- PARADIS : grande porte doree lumineuse
 		for _, sx in ipairs({ -24, 24 }) do
 			part(Vector3.new(11, 150, 11), CFrame.new(lp + Vector3.new(sx, 75, 0)), Color3.fromRGB(255,225,120), Enum.Material.Neon)
@@ -1236,33 +1417,234 @@ local function buildLandmarks()
 end
 
 -- buildDecor : vide l'ancien decor, repose les props + les landmarks + le grand repere du monde.
+-- buildGrotteDecor : decor CAVERNE (zone 5) — plafond rocheux au-dessus de la voie, stalagmites,
+-- cristaux lumineux, champignons geants, arches a traverser. Tout en pieces, dans decorFolder.
+local function buildGrotteDecor()
+	local function gp(size, cframe, color, mat)
+		local p = makePart(size, cframe, color, mat, decorFolder)
+		p.CanCollide = false; p.CastShadow = false
+		return p
+	end
+	local ROCK1 = Color3.fromRGB(66, 62, 90)
+	local ROCK2 = Color3.fromRGB(84, 78, 112)
+	local CRYS  = { Color3.fromRGB(110, 235, 255), Color3.fromRGB(178, 120, 255), Color3.fromRGB(255, 120, 210) }
+	local WOODM = Color3.fromRGB(104, 74, 46)
+	-- garde ANTI-CLIPPING : le trace se recroise -> on ne pose JAMAIS de roche a moins de
+	-- `margin` studs d'un AUTRE troncon de voie (sinon les murs traversent les rails, immonde).
+	local function awayFromTrack(pos, d, margin)
+		local m2 = margin * margin
+		for n = 1, #nodes, 2 do
+			if math.abs(cumDist[math.min(n, #cumDist)] - d) > 60 then
+				local q = nodes[n].Position
+				local dx, dy, dz = q.X - pos.X, q.Y - pos.Y, q.Z - pos.Z
+				if dx * dx + dy * dy + dz * dz < m2 then return false end
+			end
+		end
+		return true
+	end
+	-- VRAIE GROTTE ARRONDIE (en TERRAIN, technique du volcan) : on remplit un gros boudin de
+	-- roche LISSE le long de TOUTE la voie, puis on CREUSE l'interieur -> tunnel organique,
+	-- arrondi, hermetique. La ou le trace se recroise, les galeries fusionnent naturellement.
+	local d = 0
+	while d < TOTAL_DIST + 30 do
+		local p = renderAtDistance(math.min(d, TOTAL_DIST)).Position
+		Terrain:FillBall(p + Vector3.new(0, 8, 0), 44, Enum.Material.Slate)
+		d = d + 16
+	end
+	d = 0
+	while d < TOTAL_DIST + 30 do
+		local p = renderAtDistance(math.min(d, TOTAL_DIST)).Position
+		local cy = math.max(p.Y + 9, 26)   -- on ne creuse jamais sous y=1 (le sol reste plein)
+		Terrain:FillBall(Vector3.new(p.X, cy, p.Z), 25, Enum.Material.Air)
+		d = d + 12
+	end
+	-- la sortie des gares est LARGE (5 voies ecartees) : on elargit le creusement au tout debut
+	d = 0
+	while d < 150 do
+		local cf = renderAtDistance(d)
+		for _, ox in ipairs({ -26, 26 }) do
+			Terrain:FillBall((cf * CFrame.new(ox, 10, 0)).Position, 22, Enum.Material.Air)
+		end
+		d = d + 14
+	end
+	-- LANTERNES DE MINE sur poteau, en alternance gauche/droite (lumiere chaude tout du long)
+	d = 70
+	local lside = 1
+	while d < TOTAL_DIST - 40 do
+		local cf = renderAtDistance(d)
+		if math.abs(cf.UpVector.Y) > 0.92 then
+			lside = -lside
+			local base = cf * CFrame.new(lside * (TRACK_WIDTH / 2 + 2.6), -RIDE_HEIGHT, 0)
+			gp(Vector3.new(0.7, 5.6, 0.7), base * CFrame.new(0, 2.8, 0), WOODM, Enum.Material.Wood)
+			local lant = gp(Vector3.new(1.1, 1.5, 1.1), base * CFrame.new(0, 6, 0), Color3.fromRGB(255, 214, 120), Enum.Material.Neon)
+			local ll = Instance.new("PointLight"); ll.Range = 22; ll.Brightness = 1.1; ll.Color = Color3.fromRGB(255, 200, 110); ll.Parent = lant
+		end
+		d = d + rng:NextNumber(80, 110)
+	end
+	-- SOUTENEMENTS DE MINE : portiques en bois que la voie traverse + lanterne qui pend
+	d = 90
+	while d < TOTAL_DIST - 60 do
+		local cf = renderAtDistance(d)
+		if math.abs(cf.UpVector.Y) > 0.95 and awayFromTrack((cf * CFrame.new(0, 16, 0)).Position, d, 18) then
+			gp(Vector3.new(2.2, 22, 2.2), cf * CFrame.new(-(TRACK_WIDTH / 2 + 4), 8, 0), WOODM, Enum.Material.Wood)
+			gp(Vector3.new(2.2, 22, 2.2), cf * CFrame.new(TRACK_WIDTH / 2 + 4, 8, 0), WOODM, Enum.Material.Wood)
+			gp(Vector3.new(TRACK_WIDTH + 12, 2.4, 2.6), cf * CFrame.new(0, 19.5, 0), WOODM, Enum.Material.Wood)
+			local lant = gp(Vector3.new(1.1, 1.4, 1.1), cf * CFrame.new(rng:NextNumber(-3, 3), 17.8, 0), Color3.fromRGB(255, 214, 120), Enum.Material.Neon)
+			local ll = Instance.new("PointLight"); ll.Range = 24; ll.Brightness = 1.1; ll.Color = Color3.fromRGB(255, 200, 110); ll.Parent = lant
+		end
+		d = d + rng:NextNumber(150, 210)
+	end
+	-- DECOR DISPERSE : stalagmites / cristaux / champignons / VEINES D'OR dans les parois
+	-- (chaque pose verifie awayFromTrack -> plus rien ne traverse un autre troncon de voie)
+	d = 60
+	while d < TOTAL_DIST - 40 do
+		local cf = renderAtDistance(d)
+		local side = (rng:NextNumber() < 0.5) and 1 or -1
+		local roll = rng:NextNumber()
+		if roll < 0.3 then
+			local off = side * rng:NextNumber(12, 22)
+			local h1 = rng:NextNumber(6, 12)
+			local base = cf * CFrame.new(off, -RIDE_HEIGHT, 0)
+			if awayFromTrack(base.Position, d, 14) then
+				gp(Vector3.new(6.5, h1, 6.5), base * CFrame.new(0, h1 / 2, 0), ROCK1, Enum.Material.Slate)
+				gp(Vector3.new(4, h1 * 0.8, 4), base * CFrame.new(rng:NextNumber(-0.5, 0.5), h1 + h1 * 0.4 - 0.5, 0), ROCK2, Enum.Material.Slate)
+				gp(Vector3.new(2, h1 * 0.55, 2), base * CFrame.new(0, h1 * 1.75 - 0.9, 0), ROCK2, Enum.Material.Slate)
+			end
+		elseif roll < 0.58 then
+			local cc = CRYS[rng:NextInteger(1, #CRYS)]
+			local off = side * rng:NextNumber(12, 22)
+			local base = cf * CFrame.new(off, -RIDE_HEIGHT + 0.5, 0)
+			if awayFromTrack(base.Position, d, 12) then
+				local main = gp(Vector3.new(2.6, rng:NextNumber(6, 11), 2.6), base * CFrame.Angles(rng:NextNumber(-0.35, 0.35), rng:NextNumber(0, 6.2), rng:NextNumber(-0.35, 0.35)), cc, Enum.Material.Neon)
+				gp(Vector3.new(1.6, 5, 1.6), base * CFrame.new(2, -1, 0.6) * CFrame.Angles(0.4, 1, 0.2), cc, Enum.Material.Neon)
+				local cl = Instance.new("PointLight"); cl.Range = 22; cl.Brightness = 1.3; cl.Color = cc; cl.Parent = main
+			end
+		elseif roll < 0.74 then
+			-- VEINE D'OR incrustee dans la paroi (pepites Metal dorees)
+			local wx = side * rng:NextNumber(21, 25)   -- incrustees dans la paroi ARRONDIE du tunnel
+			local wy = rng:NextNumber(2, 16)
+			if awayFromTrack((cf * CFrame.new(wx, wy, 0)).Position, d, 14) then
+				for _ = 1, rng:NextInteger(3, 5) do
+					gp(Vector3.new(1.3, 1.3, 1.3), cf * CFrame.new(wx + rng:NextNumber(-1.5, 1.5), wy + rng:NextNumber(-3, 3), rng:NextNumber(-6, 6)) * CFrame.Angles(rng:NextNumber(0, 1), rng:NextNumber(0, 1), 0), Color3.fromRGB(255, 200, 60), Enum.Material.Metal)
+				end
+			end
+		elseif roll < 0.88 then
+			local hh = rng:NextNumber(5, 10)
+			local off = side * rng:NextNumber(12, 22)
+			local base = cf * CFrame.new(off, -RIDE_HEIGHT, 0)
+			if awayFromTrack(base.Position, d, 12) then
+				gp(Vector3.new(2.2, hh, 2.2), base * CFrame.new(0, hh / 2, 0), Color3.fromRGB(214, 198, 178), Enum.Material.SmoothPlastic)
+				local cap = gp(Vector3.new(hh * 1.3, hh * 0.55, hh * 1.3), base * CFrame.new(0, hh + hh * 0.2, 0), CRYS[rng:NextInteger(1, #CRYS)], Enum.Material.Neon)
+				cap.Shape = Enum.PartType.Ball
+				local ml = Instance.new("PointLight"); ml.Range = 16; ml.Brightness = 0.8; ml.Color = cap.Color; ml.Parent = cap
+			end
+		else
+			local pcf = cf * CFrame.new(side * rng:NextNumber(10, 20), rng:NextNumber(24, 30), 0)
+			if awayFromTrack(pcf.Position, d, 16) then
+				gp(Vector3.new(3.2, rng:NextNumber(8, 14), 3.2), pcf, ROCK2, Enum.Material.Slate)
+			end
+		end
+		d = d + rng:NextNumber(30, 52)
+	end
+	-- CASCADES souterraines : rideau d'eau de la paroi au sol + bassin lumineux + brume
+	d = 380
+	while d < TOTAL_DIST - 120 do
+		local cf = renderAtDistance(d)
+		local side = (rng:NextNumber() < 0.5) and 1 or -1
+		local wx = side * 22
+		if not awayFromTrack((cf * CFrame.new(wx, 8, 0)).Position, d, 16) then d = d + 90 ; continue end
+		local fall = gp(Vector3.new(6, 30, 2.2), cf * CFrame.new(wx, 10, 0), Color3.fromRGB(120, 200, 255), Enum.Material.Glass)
+		fall.Transparency = 0.35
+		local pool = gp(Vector3.new(14, 1, 12), cf * CFrame.new(wx, -RIDE_HEIGHT + 0.4, 0), Color3.fromRGB(110, 200, 255), Enum.Material.Neon)
+		pool.Transparency = 0.2
+		local mist = Instance.new("ParticleEmitter")
+		mist.Color = ColorSequence.new(Color3.fromRGB(200, 235, 255))
+		mist.Size = NumberSequence.new(2.5, 5)
+		mist.Transparency = NumberSequence.new(0.55, 1)
+		mist.Lifetime = NumberRange.new(0.8, 1.4); mist.Rate = 14; mist.Speed = NumberRange.new(2, 5)
+		mist.SpreadAngle = Vector2.new(40, 40); mist.Parent = pool
+		local wl = Instance.new("PointLight"); wl.Range = 26; wl.Brightness = 1.0; wl.Color = Color3.fromRGB(140, 210, 255); wl.Parent = pool
+		d = d + rng:NextNumber(560, 820)
+	end
+	-- WAGONNETS de mine avec leur tas d'or (clin d'oeil minier)
+	d = 300
+	while d < TOTAL_DIST - 100 do
+		local cf = renderAtDistance(d)
+		if math.abs(cf.UpVector.Y) > 0.95 then
+			local side = (rng:NextNumber() < 0.5) and 1 or -1
+			local base = cf * CFrame.new(side * rng:NextNumber(13, 20), -RIDE_HEIGHT + 1.4, 0) * CFrame.Angles(0, rng:NextNumber(0, 6.2), 0)
+			if not awayFromTrack(base.Position, d, 14) then d = d + 120 ; continue end
+			gp(Vector3.new(5.5, 2.6, 3.6), base, Color3.fromRGB(96, 66, 46), Enum.Material.Wood)
+			for _, wz in ipairs({ -1.4, 1.4 }) do
+				for _, wxx in ipairs({ -2, 2 }) do
+					local wh = gp(Vector3.new(0.5, 1.2, 1.2), base * CFrame.new(wxx, -1.4, wz) * CFrame.Angles(0, 0, math.rad(90)), Color3.fromRGB(50, 50, 58), Enum.Material.Metal)
+					wh.Shape = Enum.PartType.Cylinder
+				end
+			end
+			gp(Vector3.new(4.4, 1.2, 2.6), base * CFrame.new(0, 1.7, 0), Color3.fromRGB(255, 200, 60), Enum.Material.Metal)
+		end
+		d = d + rng:NextNumber(680, 980)
+	end
+	-- CHAUVES-SOURIS : nuees qui tournoient pres du plafond (ambiance vivante, inoffensives)
+	d = 500
+	while d < TOTAL_DIST - 200 do
+		local cf = renderAtDistance(d)
+		local center = (cf * CFrame.new(rng:NextNumber(-10, 10), rng:NextNumber(15, 22), 0)).Position
+		local swarm = { center = center, r = rng:NextNumber(6, 10), phase = rng:NextNumber(0, 6.2), parts = {} }
+		for _ = 1, 4 do
+			-- vraie silhouette de chauve-souris : corps + tete a oreilles + 2 AILES qui battent
+			local body = gp(Vector3.new(0.9, 0.7, 1.7), CFrame.new(center), Color3.fromRGB(34, 30, 44), Enum.Material.SmoothPlastic)
+			local head = gp(Vector3.new(0.7, 0.5, 0.6), CFrame.new(center), Color3.fromRGB(34, 30, 44), Enum.Material.SmoothPlastic)
+			local wl = gp(Vector3.new(2.1, 0.12, 1.2), CFrame.new(center), Color3.fromRGB(48, 40, 64), Enum.Material.SmoothPlastic)
+			local wr = gp(Vector3.new(2.1, 0.12, 1.2), CFrame.new(center), Color3.fromRGB(48, 40, 64), Enum.Material.SmoothPlastic)
+			table.insert(swarm.parts, { body = body, head = head, wl = wl, wr = wr, ph = rng:NextNumber(0, 6.2), rr = rng:NextNumber(0.7, 1.3) })
+		end
+		table.insert(BATS, swarm)
+		d = d + rng:NextNumber(700, 1100)
+	end
+end
+
 local function buildDecor()
 	decorFolder:ClearAllChildren()
+	BATS = {}   -- nuees de chauves-souris : remplies par la grotte, vide ailleurs (anim : boucle TRAP)
 	buildDecorProps()
 	buildLandmarks()
 	backdrop(CURRENT_ZONE)
+	if CURRENT_ZONE == 5 then buildGrotteDecor() end   -- la caverne par-dessus le decor de base
 end
 buildDecor()
 
 -- applyLighting : ciel/ambiance teintes selon le monde (glace = bleu, magma = orange...).
 local function applyLighting()
 	local atmo = Lighting:FindFirstChildOfClass("Atmosphere") or Instance.new("Atmosphere")
-	if CURRENT_ZONE == 1 then            -- ENFER : crepuscule rouge ardent (mais on VOIT bien)
-		Lighting.ClockTime = 17.2; Lighting.Brightness = 2.9
-		Lighting.OutdoorAmbient = Color3.fromRGB(145, 85, 68)
-		atmo.Color = Color3.fromRGB(185, 95, 62); atmo.Haze = 2;   atmo.Density = 0.32
-	elseif CURRENT_ZONE == 2 then        -- VILLE : crepuscule urbain
-		Lighting.ClockTime = 18.5; Lighting.Brightness = 2.2
-		Lighting.OutdoorAmbient = Color3.fromRGB(110, 112, 132)
-		atmo.Color = Color3.fromRGB(205, 200, 225); atmo.Haze = 2.4; atmo.Density = 0.4
+	-- POP visuel facon "jouet" : saturation relevee + bloom doux (crees une fois, mis a jour ensuite)
+	local cc = Lighting:FindFirstChild("PopColor") or Instance.new("ColorCorrectionEffect")
+	cc.Name = "PopColor"; cc.Saturation = 0.28; cc.Contrast = 0.05; cc.Brightness = 0.02
+	cc.Parent = Lighting
+	local bloom = Lighting:FindFirstChild("PopBloom") or Instance.new("BloomEffect")
+	bloom.Name = "PopBloom"; bloom.Intensity = 0.65; bloom.Size = 24; bloom.Threshold = 1.05
+	bloom.Parent = Lighting
+	if CURRENT_ZONE == 1 then            -- ENFER : rouge ardent mais LUMINEUX (zero zone noire)
+		Lighting.ClockTime = 16.4; Lighting.Brightness = 3.4
+		Lighting.OutdoorAmbient = Color3.fromRGB(186, 116, 96)
+		atmo.Color = Color3.fromRGB(222, 122, 78); atmo.Haze = 1.6; atmo.Density = 0.24
+	elseif CURRENT_ZONE == 2 then        -- VILLE : crepuscule urbain clair
+		Lighting.ClockTime = 18.5; Lighting.Brightness = 2.8
+		Lighting.OutdoorAmbient = Color3.fromRGB(138, 142, 168)
+		atmo.Color = Color3.fromRGB(215, 210, 235); atmo.Haze = 1.8; atmo.Density = 0.3
 	elseif CURRENT_ZONE == 3 then        -- MONTAGNE : grand jour froid et vif
-		Lighting.ClockTime = 11;   Lighting.Brightness = 3
-		Lighting.OutdoorAmbient = Color3.fromRGB(150, 165, 190)
-		atmo.Color = Color3.fromRGB(225, 240, 255); atmo.Haze = 1.4; atmo.Density = 0.3
+		Lighting.ClockTime = 11;   Lighting.Brightness = 3.2
+		Lighting.OutdoorAmbient = Color3.fromRGB(170, 185, 210)
+		atmo.Color = Color3.fromRGB(230, 242, 255); atmo.Haze = 1.2; atmo.Density = 0.26
+	elseif CURRENT_ZONE == 5 then        -- GROTTE : sombre mais NETTE — brume reduite, sinon le
+		-- brouillard "mange" les parois lointaines et on croit voir du ciel / du vide
+		Lighting.ClockTime = 0;    Lighting.Brightness = 2.6
+		Lighting.OutdoorAmbient = Color3.fromRGB(118, 112, 164)
+		atmo.Color = Color3.fromRGB(96, 88, 148); atmo.Haze = 1.3; atmo.Density = 0.18
 	else                                  -- PARADIS : lumiere doree, douce
-		Lighting.ClockTime = 14;   Lighting.Brightness = 3.2
-		Lighting.OutdoorAmbient = Color3.fromRGB(200, 192, 160)
-		atmo.Color = Color3.fromRGB(255, 244, 212); atmo.Haze = 1.8; atmo.Density = 0.3
+		Lighting.ClockTime = 14;   Lighting.Brightness = 3.4
+		Lighting.OutdoorAmbient = Color3.fromRGB(214, 206, 176)
+		atmo.Color = Color3.fromRGB(255, 246, 218); atmo.Haze = 1.6; atmo.Density = 0.26
 	end
 	atmo.Parent = Lighting
 end
@@ -1539,13 +1921,15 @@ local function buildHub()
 	local cf0 = renderAtDistance(0)
 	-- HUB THEMATISE : version ENFER (pierre sombre + lave) sinon version normale (bleu), selon le monde.
 	local hell  = (CURRENT_ZONE == 1)
-	local FLA   = hell and Color3.fromRGB(58, 44, 42)  or Color3.fromRGB(56, 60, 82)
-	local FLB   = hell and Color3.fromRGB(38, 28, 28)  or Color3.fromRGB(40, 44, 62)
-	local STONE = hell and Color3.fromRGB(64, 50, 48)  or Color3.fromRGB(88, 92, 108)
-	local WOOD  = hell and Color3.fromRGB(52, 40, 38)  or Color3.fromRGB(120, 78, 46)
-	local ACC   = hell and Color3.fromRGB(255, 95, 30) or Color3.fromRGB(120, 200, 255)
+	local cave  = (CURRENT_ZONE == 5)
+	-- PALETTE "jouet" : enfer VIF (corail/bordeaux) ; grotte = caverne a cristaux (indigo + cyan)
+	local FLA   = hell and Color3.fromRGB(226, 88, 58)  or cave and Color3.fromRGB(108, 96, 198) or Color3.fromRGB(56, 60, 82)
+	local FLB   = hell and Color3.fromRGB(104, 42, 50)  or cave and Color3.fromRGB(58, 50, 106)  or Color3.fromRGB(40, 44, 62)
+	local STONE = hell and Color3.fromRGB(162, 84, 72)  or cave and Color3.fromRGB(96, 92, 136)  or Color3.fromRGB(88, 92, 108)
+	local WOOD  = hell and Color3.fromRGB(132, 68, 50)  or cave and Color3.fromRGB(90, 78, 112)  or Color3.fromRGB(120, 78, 46)
+	local ACC   = hell and Color3.fromRGB(255, 95, 30) or cave and Color3.fromRGB(110, 235, 255) or Color3.fromRGB(120, 200, 255)
 	local GOLD  = hell and Color3.fromRGB(255, 150, 40) or Color3.fromRGB(255, 205, 60)
-	local DEFMAT = hell and Enum.Material.Slate or Enum.Material.SmoothPlastic
+	local DEFMAT = Enum.Material.SmoothPlastic   -- plastique brillant partout = effet brique jouet
 	local function hp(size, off, color, mat)
 		return makePart(size, cf0 * off, color, mat or DEFMAT, trackFolder)
 	end
@@ -1570,87 +1954,127 @@ local function buildHub()
 		return part
 	end
 
-	-- ---- SOL (GRAND, agrandi) : dalle + damier + bordures neon ----
-	local HW = 80               -- demi-largeur du hub (AGRANDI : 62 -> 80)
-	local FZ, BZ = -4, 108      -- profondeur du hub (AGRANDI : 92 -> 108)
+	-- ---- PLAQUE VOLANTE (style "plate gaem") : UNE grande plaque a plots, OUVERTE sur le ciel ----
+	local HW = 120              -- demi-largeur de la plaque
+	local FZ, BZ = -4, 120      -- profondeur de la plaque
 	local CZ, D = (FZ + BZ) / 2, BZ - FZ
-	hp(Vector3.new(HW * 2 + 2, 2, D), CFrame.new(0, -3.4, CZ), FLB)
-	for ix = -9, 9 do
-		for iz = 0, 12 do
-			if (ix + iz) % 2 == 0 then
-				hp(Vector3.new(8.6, 0.3, 8.6), CFrame.new(ix * 8.7, -2.3, 4 + iz * 8.7), FLA)
+	local function studTop(p)
+		p.Material = Enum.Material.Plastic
+		p.TopSurface = Enum.SurfaceType.Studs
+		return p
+	end
+	studTop(hp(Vector3.new(HW * 2, 12, D), CFrame.new(0, -8.4, CZ), FLA))   -- plaque epaisse (top a -2.4)
+	-- (murs / grille gothique / piliers / verriere / mur du fond SUPPRIMES : plaque ouverte, ciel libre.
+	--  4 torches d'angle pour garder la flamme Enfer sans enfermer.)
+	if hell then
+		for _, cx in ipairs({ -(HW - 8), HW - 8 }) do
+			for _, cz in ipairs({ FZ + 8, BZ - 8 }) do
+				hp(Vector3.new(2.2, 10, 2.2), CFrame.new(cx, 2.6, cz), STONE)
+				local capt = hp(Vector3.new(3.2, 1.2, 3.2), CFrame.new(cx, 8, cz), GOLD, Enum.Material.Neon)
+				local plt = Instance.new("PointLight"); plt.Range = 26; plt.Brightness = 1.6
+				plt.Color = Color3.fromRGB(255, 150, 70); plt.Parent = capt
+				local ft = Instance.new("Fire"); ft.Size = 10; ft.Heat = 10; ft.Color = Color3.fromRGB(255, 150, 45); ft.SecondaryColor = Color3.fromRGB(255, 70, 15); ft.Parent = capt
 			end
 		end
 	end
-	hp(Vector3.new(HW * 2 + 2, 0.5, 1.4), CFrame.new(0, -2.1, FZ + 0.5), ACC, Enum.Material.Neon)
-	hp(Vector3.new(HW * 2 + 2, 0.5, 1.4), CFrame.new(0, -2.1, BZ - 0.5), ACC, Enum.Material.Neon)
-	hp(Vector3.new(1.4, 0.5, D), CFrame.new(-(HW + 0.5), -2.1, CZ), ACC, Enum.Material.Neon)
-	hp(Vector3.new(1.4, 0.5, D), CFrame.new(HW + 0.5, -2.1, CZ), ACC, Enum.Material.Neon)
-
-	-- ---- GRILLE GOTHIQUE (enfer) ----
-	if hell then
-		local bar = Color3.fromRGB(26, 20, 20)
-		for fx = -HW, HW, 6 do
-			hp(Vector3.new(0.4, 4.5, 0.4), CFrame.new(fx, 0.3, FZ + 0.5), bar, Enum.Material.Metal)
-			hp(Vector3.new(0.4, 4.5, 0.4), CFrame.new(fx, 0.3, BZ - 0.5), bar, Enum.Material.Metal)
+	if cave then
+		-- CAVERNE DU SPAWN : la plaque est FERMEE (parois + plafond rocheux + cristaux + lanternes).
+		-- On spawn DANS la montagne ; les rails sortent par la bouche de la grotte, devant.
+		local RK1, RK2 = Color3.fromRGB(58, 54, 84), Color3.fromRGB(74, 68, 102)
+		local function rock(size, off)
+			local p = hp(size, off, (rng:NextNumber() < 0.5) and RK1 or RK2, Enum.Material.Slate)
+			p.CastShadow = false
+			return p
 		end
-		for fz = FZ + 1, BZ - 1, 6 do
-			hp(Vector3.new(0.4, 4.5, 0.4), CFrame.new(-(HW + 0.5), 0.3, fz), bar, Enum.Material.Metal)
-			hp(Vector3.new(0.4, 4.5, 0.4), CFrame.new(HW + 0.5, 0.3, fz), bar, Enum.Material.Metal)
+		rock(Vector3.new(8, 64, D + 24), CFrame.new(-(HW + 2), 24, CZ))            -- paroi gauche
+		rock(Vector3.new(8, 64, D + 24), CFrame.new(HW + 2, 24, CZ))               -- paroi droite
+		rock(Vector3.new(HW * 2 + 12, 64, 8), CFrame.new(0, 24, BZ + 2))           -- paroi du fond
+		rock(Vector3.new(HW - 36, 64, 8), CFrame.new(-(HW / 2 + 18), 24, FZ - 2))  -- avant gauche
+		rock(Vector3.new(HW - 36, 64, 8), CFrame.new(HW / 2 + 18, 24, FZ - 2))     -- avant droit
+		rock(Vector3.new(76, 34, 8), CFrame.new(0, 39, FZ - 2))                    -- linteau (bouche de grotte)
+		for px = -1, 1 do                                                           -- plafond en dalles
+			for pz = 0, 2 do
+				rock(Vector3.new(HW * 0.78, 6, D * 0.42),
+					CFrame.new(px * HW * 0.7, 52 + rng:NextNumber(-2, 2), 16 + pz * D * 0.36) * CFrame.Angles(rng:NextNumber(-0.05, 0.05), 0, rng:NextNumber(-0.05, 0.05)))
+			end
 		end
-		hp(Vector3.new(HW * 2, 0.4, 0.4), CFrame.new(0, 2, FZ + 0.5), bar, Enum.Material.Metal)
-		hp(Vector3.new(HW * 2, 0.4, 0.4), CFrame.new(0, 2, BZ - 0.5), bar, Enum.Material.Metal)
-		hp(Vector3.new(0.4, 0.4, D), CFrame.new(-(HW + 0.5), 2, CZ), bar, Enum.Material.Metal)
-		hp(Vector3.new(0.4, 0.4, D), CFrame.new(HW + 0.5, 2, CZ), bar, Enum.Material.Metal)
+		for _ = 1, 14 do                                                            -- stalactites du plafond
+			rock(Vector3.new(3.4, rng:NextNumber(8, 15), 3.4), CFrame.new(rng:NextNumber(-(HW - 20), HW - 20), 45, rng:NextNumber(10, BZ - 14)))
+		end
+		for _ = 1, 12 do                                                            -- cristaux suspendus qui eclairent
+			local cc = ({ Color3.fromRGB(110, 235, 255), Color3.fromRGB(178, 120, 255), Color3.fromRGB(255, 120, 210) })[rng:NextInteger(1, 3)]
+			local cr = hp(Vector3.new(2.4, rng:NextNumber(6, 10), 2.4),
+				CFrame.new(rng:NextNumber(-(HW - 16), HW - 16), 46, rng:NextNumber(8, BZ - 10)) * CFrame.Angles(rng:NextNumber(-0.4, 0.4), rng:NextNumber(0, 6.2), rng:NextNumber(2.8, 3.4)),
+				cc, Enum.Material.Neon)
+			local cl = Instance.new("PointLight"); cl.Range = 30; cl.Brightness = 1.4; cl.Color = cc; cl.Parent = cr
+		end
+		for _, lx in ipairs({ -(HW - 6), HW - 6 }) do                               -- lanternes le long des parois
+			for lz = 14, BZ - 10, 34 do
+				local lant = hp(Vector3.new(1.2, 1.6, 1.2), CFrame.new(lx, 8, lz), Color3.fromRGB(255, 214, 120), Enum.Material.Neon)
+				local ll = Instance.new("PointLight"); ll.Range = 30; ll.Brightness = 1.2; ll.Color = Color3.fromRGB(255, 200, 110); ll.Parent = lant
+			end
+		end
 	end
 
-	-- ---- PILIERS + lampes + VERRIERE ----
-	for _, px in ipairs({ -(HW - 6), HW - 6 }) do
-		for _, pz in ipairs({ 4, 44, 84 }) do
-			hp(Vector3.new(3, 26, 3), CFrame.new(px, 9, pz), STONE)
-			local cap = hp(Vector3.new(5, 1.6, 5), CFrame.new(px, 21, pz), ACC, Enum.Material.Neon)
-			local pl = Instance.new("PointLight"); pl.Range = 30; pl.Brightness = 2.4
-			pl.Color = hell and Color3.fromRGB(255, 150, 70) or Color3.fromRGB(255, 240, 210); pl.Parent = cap
-			if hell then local f = Instance.new("Fire"); f.Size = 13; f.Heat = 12; f.Color = Color3.fromRGB(255, 150, 45); f.SecondaryColor = Color3.fromRGB(255, 70, 15); f.Parent = cap end
-		end
-	end
-	hp(Vector3.new(HW * 2 + 4, 1.6, D + 4), CFrame.new(0, 22, CZ), Color3.fromRGB(38, 42, 58))
-	hp(Vector3.new(HW * 2 - 4, 0.5, D - 4), CFrame.new(0, 22.9, CZ), ACC, Enum.Material.Neon)
-	hp(Vector3.new(HW * 2, 28, 1.6), CFrame.new(0, 8, BZ - 0.3), STONE)
-	hp(Vector3.new(HW * 2, 0.7, 1.8), CFrame.new(0, 22, BZ - 0.3), ACC, Enum.Material.Neon)
-
-	-- ---- PANNEAUX (texte court, centre, lisible) ----
+	-- ---- PANNEAUX (sur poteaux : la plaque est ouverte, plus de murs) ----
 	sign(CFrame.new(0, 15, 6), 54, 9, "🚂 BALADE EN CHARIOT", ACC, Color3.fromRGB(24, 28, 42))
-	-- panneau classement : UNE seule ligne (fini le "coupe en deux"). Le vrai
-	-- classement reste la liste native en haut a droite.
-	sign(CFrame.new(-22, 8, 88), 24, 6, "🏆 CLASSEMENT", GOLD, Color3.fromRGB(20, 24, 38))
+	hp(Vector3.new(1, 13, 1), CFrame.new(-21, 4, 6), Color3.fromRGB(44, 40, 48), Enum.Material.Metal)
+	hp(Vector3.new(1, 13, 1), CFrame.new(21, 4, 6), Color3.fromRGB(44, 40, 48), Enum.Material.Metal)
+	-- (kiosques RENAISSANCE/AMELIORER + ancien panneau classement SUPPRIMES : hub epure.
+	--  Les stats passent par le menu a l'ecran, la renaissance par son pad au sol.)
 
-	-- ---- KIOSQUES ----
-	local function kiosk(off, label, col)
-		hp(Vector3.new(13, 7, 8), off, WOOD, Enum.Material.WoodPlanks)
-		hp(Vector3.new(14, 1.4, 9), off * CFrame.new(0, 4.2, 0), col, Enum.Material.Neon)
-		sign(off * CFrame.new(0, 8, 0), 14, 4, label, Color3.new(1, 1, 1), Color3.fromRGB(22, 26, 40))
-	end
-	kiosk(CFrame.new(36, 0, 64), "⬆ AMÉLIORER", Color3.fromRGB(90, 200, 120))
-	kiosk(CFrame.new(36, 0, 48), "✨ RENAISSANCE", Color3.fromRGB(190, 120, 230))
-
-	-- ---- BANCS ----
-	for _, bx in ipairs({ -18, 18 }) do
+	-- ---- BANCS (resserres : les voies des gares passent a x ~24 au niveau z=36) ----
+	for _, bx in ipairs({ -13, 13 }) do
 		hp(Vector3.new(9, 0.6, 2.6), CFrame.new(bx, -1.7, 36), WOOD, Enum.Material.WoodPlanks)
 		hp(Vector3.new(9, 1.8, 0.5), CFrame.new(bx, -0.8, 37), WOOD, Enum.Material.WoodPlanks)
 	end
 
-	-- ---- TROPHEE CENTRAL : une vraie COUPE doree (socle + pied + bol + 2 anses) ----
-	hp(Vector3.new(10, 1.6, 10), CFrame.new(0, -2.4, 80), STONE)                       -- socle pierre
-	hp(Vector3.new(5, 1.2, 5), CFrame.new(0, -1.4, 80), GOLD, Enum.Material.Neon)      -- plaque doree
-	hp(Vector3.new(1.6, 3.5, 1.6), CFrame.new(0, 0.6, 80), GOLD, Enum.Material.Neon)   -- pied
-	local bowl = hp(Vector3.new(7, 4.5, 7), CFrame.new(0, 4, 80), GOLD, Enum.Material.Neon)  -- coupe (bol)
-	bowl.Shape = Enum.PartType.Ball
-	hp(Vector3.new(1, 3.4, 1), CFrame.new(-4, 4.2, 80) * CFrame.Angles(0, 0, math.rad(22)),  GOLD, Enum.Material.Neon)  -- anse gauche
-	hp(Vector3.new(1, 3.4, 1), CFrame.new( 4, 4.2, 80) * CFrame.Angles(0, 0, math.rad(-22)), GOLD, Enum.Material.Neon)  -- anse droite
-	sign(CFrame.new(0, 9, 80), 12, 3.5, "🏆 TROPHEES", GOLD, Color3.fromRGB(20, 24, 38))      -- etiquette claire
-	local tlight = Instance.new("PointLight"); tlight.Range = 26; tlight.Brightness = 2.4; tlight.Color = GOLD; tlight.Parent = bowl
-	local spk = Instance.new("Sparkles"); spk.SparkleColor = Color3.fromRGB(255, 220, 120); spk.Parent = bowl
+	-- ---- CLASSEMENT LIVE : grand tableau propre SUR POTEAUX au bord de la plaque (TOP 5 auto) ----
+	local lbPos = (cf0 * CFrame.new(-70, 10.5, 112)).Position
+	local lbCF  = CFrame.lookAt(lbPos, Vector3.new(hubCenter.X, lbPos.Y, hubCenter.Z))
+	makePart(Vector3.new(31.6, 17.6, 0.5), lbCF * CFrame.new(0, 0, 0.3), GOLD, Enum.Material.Neon, trackFolder)   -- cadre dore
+	local lbBoard = makePart(Vector3.new(30, 16, 0.6), lbCF, Color3.fromRGB(24, 22, 34), Enum.Material.SmoothPlastic, trackFolder)
+	makePart(Vector3.new(1, 6, 1), lbCF * CFrame.new(-13, -10.5, 0.2), Color3.fromRGB(44, 40, 48), Enum.Material.Metal, trackFolder)
+	makePart(Vector3.new(1, 6, 1), lbCF * CFrame.new(13, -10.5, 0.2), Color3.fromRGB(44, 40, 48), Enum.Material.Metal, trackFolder)
+	local llight = Instance.new("PointLight"); llight.Range = 24; llight.Brightness = 1.6; llight.Color = GOLD; llight.Parent = lbBoard
+	local lsg = Instance.new("SurfaceGui")
+	lsg.Face = Enum.NormalId.Front; lsg.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud; lsg.PixelsPerStud = 30
+	lsg.Adornee = lbBoard; lsg.Parent = lbBoard
+	local ltitle = Instance.new("TextLabel")
+	ltitle.Size = UDim2.new(1, 0, 0.2, 0); ltitle.BackgroundTransparency = 1
+	ltitle.Font = Enum.Font.GothamBlack; ltitle.TextScaled = true
+	ltitle.TextColor3 = GOLD; ltitle.Text = "🏆 CLASSEMENT"; ltitle.Parent = lsg
+	local lbRows = {}
+	for r = 1, 5 do
+		local t = Instance.new("TextLabel")
+		t.Size = UDim2.new(0.9, 0, 0.13, 0); t.Position = UDim2.new(0.05, 0, 0.22 + (r - 1) * 0.15, 0)
+		t.BackgroundTransparency = 1; t.Font = Enum.Font.GothamBold; t.TextScaled = true
+		t.TextXAlignment = Enum.TextXAlignment.Left
+		t.TextColor3 = (r == 1 and Color3.fromRGB(255, 215, 90)) or (r == 2 and Color3.fromRGB(208, 214, 224))
+			or (r == 3 and Color3.fromRGB(226, 152, 96)) or Color3.fromRGB(238, 238, 246)
+		t.Text = r .. "."; t.Parent = lsg
+		lbRows[r] = t
+	end
+	task.spawn(function()
+		while lbBoard.Parent do
+			local list = {}
+			for _, plr in ipairs(Players:GetPlayers()) do
+				local ls = plr:FindFirstChild("leaderstats")
+				local w  = (ls and ls:FindFirstChild("Wins") and ls.Wins.Value) or 0
+				local pi = (ls and ls:FindFirstChild("Pieces") and ls.Pieces.Value) or 0
+				table.insert(list, { name = plr.DisplayName, w = w, p = pi })
+			end
+			table.sort(list, function(a, b)
+				if a.w ~= b.w then return a.w > b.w end
+				return a.p > b.p
+			end)
+			for r = 1, 5 do
+				local e = list[r]
+				lbRows[r].Text = e and string.format("%d.   %s   -   %d wins", r, e.name, e.w) or (r .. ".")
+			end
+			task.wait(4)
+		end
+	end)
 
 	-- ---- PLANTES en pots ----
 	local function pot(off)
@@ -1663,36 +2087,113 @@ local function buildHub()
 			lv.Shape = Enum.PartType.Ball
 		end
 	end
-	pot(CFrame.new(-40, -1.3, 22)); pot(CFrame.new(40, -1.3, 22))
-	pot(CFrame.new(-40, -1.3, 66)); pot(CFrame.new(40, -1.3, 66))
+	pot(CFrame.new(-24, -1.3, 12)); pot(CFrame.new(24, -1.3, 12))
+	pot(CFrame.new(-58, -1.3, 66)); pot(CFrame.new(58, -1.3, 66))
 
-	-- ---- POINT D'APPARITION (grand) ----
+	-- ---- POINT D'APPARITION : totalement INVISIBLE (on apparait sur la plaque, sans marqueur) ----
 	local sp = Instance.new("SpawnLocation")
 	sp.Size = Vector3.new(22, 1, 22); sp.Anchored = true; sp.Neutral = true
-	sp.CFrame = cf0 * CFrame.new(0, -2.4, 26)   -- spawn rapproche des boutons d'apparition
-	sp.Color = ACC; sp.Material = Enum.Material.Neon; sp.Transparency = 0.4
+	sp.CFrame = cf0 * CFrame.new(0, -1.7, 26)   -- spawn rapproche des boutons d'apparition
+	sp.Transparency = 1; sp.CanCollide = false
 	sp.Parent = trackFolder
 
-	-- ---- BOUTONS D'APPARITION : 1 PAR VOIE, PARFAITEMENT ALIGNES sur START_LANE_OFFSETS ----
-	-- monter sur un bouton colore -> ton chariot apparait sur SA voie (juste devant), qui rejoint
-	-- la voie principale. Comme on iter START_LANE_OFFSETS, bouton et voie sont au MEME X = 0 trou.
-	sign(CFrame.new(0, 11, 18), 60, 5, "🚂 MONTE SUR UN BOUTON → TON CHARIOT APPARAÎT SUR SA VOIE", Color3.new(1, 1, 1), Color3.fromRGB(20, 24, 38))
+	-- ---- GARES DE DEPART ECARTEES (style "plate gaem") : 5 quais, CHACUN SON COIN de la plaque.
+	--      Chaque gare a SA voie decorative qui serpente jusqu'a l'entree de la vraie voie de
+	--      depart (x = offset, z = 0). Le chariot, lui, apparait sur la vraie voie et le joueur
+	--      y est assis AUTOMATIQUEMENT -> pas besoin que le bouton soit a cote du chariot.
+	sign(CFrame.new(0, 11, 18), 60, 5, "🚂 MONTE SUR UN BOUTON → TON CHARIOT APPARAÎT", Color3.new(1, 1, 1), Color3.fromRGB(20, 24, 38))
+	hp(Vector3.new(1, 9, 1), CFrame.new(-29, 2, 18), Color3.fromRGB(44, 40, 48), Enum.Material.Metal)
+	hp(Vector3.new(1, 9, 1), CFrame.new(29, 2, 18), Color3.fromRGB(44, 40, 48), Enum.Material.Metal)
 	local btnCols = { Color3.fromRGB(90, 220, 120), Color3.fromRGB(90, 200, 255), Color3.fromRGB(235, 120, 235), Color3.fromRGB(255, 170, 60), Color3.fromRGB(255, 235, 90) }
 	local cdpad = {}
-	for i, L in ipairs(START_LANE_OFFSETS) do
-		local col = btnCols[((i - 1) % #btnCols) + 1]
-		local pz = 6
-		hp(Vector3.new(10, 1, 10), CFrame.new(L, -2.9, pz), Color3.fromRGB(16, 16, 22), Enum.Material.SmoothPlastic)   -- socle noir
-		local pad = hp(Vector3.new(8.4, 1.5, 8.4), CFrame.new(L, -2.25, pz), col, Enum.Material.Neon)                  -- le BOUTON (on monte dessus)
-		local pl = Instance.new("PointLight"); pl.Range = 18; pl.Brightness = 2.8; pl.Color = col; pl.Parent = pad
-		hp(Vector3.new(1.2, 7, 1.2), CFrame.new(L, 1.5, pz), col, Enum.Material.Neon)                                 -- mat lumineux
-		local cap = hp(Vector3.new(3.4, 3.4, 3.4), CFrame.new(L, 5.6, pz), col, Enum.Material.Neon)                   -- boule au sommet
-		cap.Shape = Enum.PartType.Ball
+	local GARES = {   -- x = offset de la VRAIE voie ; gx/gz = position de la gare sur la plaque
+		{ x = -26, gx = -88, gz = 78 },
+		{ x = -13, gx = -45, gz = 98 },
+		{ x = 0,   gx = 0,   gz = 106 },
+		{ x = 13,  gx = 45,  gz = 98 },
+		{ x = 26,  gx = 88,  gz = 78 },
+	}
+	table.clear(GARE_DATA)   -- (re)rempli a chaque build : les chariots demarrent AUX gares
+	local base0 = cf0 * CFrame.new(0, -RIDE_HEIGHT, 0)
+	local zbed = ZONES[zoneForSegment(1)].bed
+	local woodCol = Color3.fromRGB(96, 60, 33)
+	local function bez2(p0, p1, p2, t)
+		local a, b = p0:Lerp(p1, t), p1:Lerp(p2, t)
+		return a:Lerp(b, t)
+	end
+	for gi, G in ipairs(GARES) do
+		local col = btnCols[((gi - 1) % #btnCols) + 1]
+		-- VOIE DECORATIVE : courbe douce (Bezier) gare -> entree de voie reelle
+		-- p1 a le MEME x que l'entree de voie -> la courbe arrive TANGENTE a l'axe du circuit
+		-- (raccord parfaitement droit avec la vraie voie, fini les rails "tordus" a la jonction)
+		local p0 = Vector3.new(G.gx, 0, G.gz)
+		local p1 = Vector3.new(G.x, 0, G.gz * 0.42)
+		local p2 = Vector3.new(G.x, 0, 1)
+		-- la VRAIE trajectoire du chariot = cette meme courbe, echantillonnee pour laneOffsetAt
+		local gpts = {}
+		for s = 0, 24 do
+			local q = bez2(p0, p1, p2, 1 - s / 24)
+			gpts[#gpts + 1] = { z = q.Z, x = q.X }
+		end
+		GARE_DATA[G.x] = { gz = G.gz, len = G.gz, pts = gpts }
+		local NAP = 16
+		local prev
+		for s = 0, NAP do
+			local cur = bez2(p0, p1, p2, s / NAP)
+			if prev then
+				local seg = cur - prev
+				local dirL = Vector3.new(seg.X, 0, seg.Z).Unit
+				local perp = Vector3.new(-dirL.Z, 0, dirL.X)
+				local a = (base0 * CFrame.new(prev.X, -0.35, prev.Z)).Position
+				local b = (base0 * CFrame.new(cur.X, -0.35, cur.Z)).Position
+				local bl = (b - a).Magnitude
+				if bl > 1e-3 then
+					local bp = makePart(Vector3.new(TRACK_WIDTH, 0.6, bl + 0.4), CFrame.lookAt((a + b) / 2, b), zbed, Enum.Material.Plastic, trackFolder)
+					bp.TopSurface = Enum.SurfaceType.Studs
+				end
+				for _, side in ipairs({ GAUGE, -GAUGE }) do
+					local pa, pb = prev + perp * side, cur + perp * side
+					local ra = (base0 * CFrame.new(pa.X, RAIL_Y, pa.Z)).Position
+					local rb = (base0 * CFrame.new(pb.X, RAIL_Y, pb.Z)).Position
+					local rl = (rb - ra).Magnitude
+					if rl > 1e-3 then makePart(Vector3.new(RAIL_W, RAIL_H, rl + 0.1), CFrame.lookAt((ra + rb) / 2, rb), RAIL_COLOR, RAIL_MAT, trackFolder) end
+				end
+				local ta = (base0 * CFrame.new(prev.X, 0.05, prev.Z)).Position
+				local tb = (base0 * CFrame.new(cur.X, 0.05, cur.Z)).Position
+				makePart(Vector3.new(TRACK_WIDTH - 0.4, 0.4, 1.1), CFrame.lookAt(ta, tb), woodCol, Enum.Material.Wood, trackFolder)
+			end
+			prev = cur
+		end
+		-- BUTOIR au bout de la gare (petit bloc sombre, comme une vraie fin de voie)
+		hp(Vector3.new(TRACK_WIDTH + 1, 2.4, 1.2), CFrame.new(G.gx, -1.2, G.gz + 2.4), Color3.fromRGB(30, 26, 30), Enum.Material.Metal)
+		-- (panneaux "DEPART n" supprimes : inutiles, la couleur du bouton suffit)
+		-- BOUTON arcade a cote du quai (socle sombre + anneau neon fin + bouton rond plat)
+		local bx, bz = G.gx + (G.gx >= 0 and 12 or -12), G.gz - 4
+		local socle = hp(Vector3.new(0.6, 12, 12), CFrame.new(bx, -2.7, bz) * CFrame.Angles(0, 0, math.rad(90)), Color3.fromRGB(18, 18, 24), Enum.Material.SmoothPlastic)
+		socle.Shape = Enum.PartType.Cylinder
+		local ring = hp(Vector3.new(0.35, 10.6, 10.6), CFrame.new(bx, -2.3, bz) * CFrame.Angles(0, 0, math.rad(90)), col, Enum.Material.Neon)
+		ring.Shape = Enum.PartType.Cylinder
+		local pad = hp(Vector3.new(0.7, 9, 9), CFrame.new(bx, -2.05, bz) * CFrame.Angles(0, 0, math.rad(90)), col, Enum.Material.SmoothPlastic)
+		pad.Shape = Enum.PartType.Cylinder
+		local pl = Instance.new("PointLight"); pl.Range = 12; pl.Brightness = 0.8; pl.Color = col; pl.Parent = pad
+		local bb = Instance.new("BillboardGui")
+		bb.Size = UDim2.new(0, 120, 0, 36); bb.StudsOffset = Vector3.new(0, 4, 0)
+		bb.MaxDistance = 80; bb.Adornee = pad; bb.Parent = pad
+		local bt = Instance.new("TextLabel")
+		bt.Size = UDim2.new(1, 0, 1, 0); bt.BackgroundTransparency = 1
+		bt.Font = Enum.Font.GothamBlack; bt.TextScaled = true
+		bt.TextColor3 = Color3.new(1, 1, 1); bt.TextStrokeTransparency = 0.25
+		bt.Text = "▶ JOUER"; bt.Parent = bb
 		pad.Touched:Connect(function(hit)
 			local plr = Players:GetPlayerFromCharacter(hit.Parent)
-			if plr and not cdpad[plr] then cdpad[plr] = true; spawnPlayerCart(plr); task.delay(2.5, function() cdpad[plr] = nil end) end
+			if plr and not cdpad[plr] then cdpad[plr] = true; spawnPlayerCart(plr, G.x); task.delay(2.5, function() cdpad[plr] = nil end) end
 		end)
 	end
+end
+-- menage du modele Studio : on supprime la Baseplate + le spawn BLANC du template (sinon ils
+-- flottent au milieu de NOTRE monde et les joueurs peuvent y apparaitre par erreur).
+for _, obj in ipairs(Workspace:GetChildren()) do
+	if obj.Name == "Baseplate" or (obj:IsA("SpawnLocation") and obj.Parent == Workspace) then obj:Destroy() end
 end
 buildHub()
 
@@ -2123,7 +2624,8 @@ local function connectSeat(pc)
 		-- deraillement, qui doit rester au checkpoint) : on demarre une course neuve,
 		-- distance + boosts remis a zero. Les Wins / Etapes, eux, sont conserves.
 		if occ and not state.derailing then
-			state.distance = 0; state.speed = 0; state.lastSeg = 0
+			-- nouvelle course : on repart DE LA GARE (distance negative = approche), pas de 0
+			state.distance = laneStartDist(pc.laneX); state.speed = 0; state.lastSeg = 0
 			state.curStage = 1; state.stageStart = 0; state.respawnDist = 0
 			state.grip = 0; state.lean = 0; state.lastLean = nil
 			state.boostLevel = 0; state.boostSpeed = 0; state.boostGrip = 0; state.maxReached = 0
@@ -2171,33 +2673,41 @@ end
 
 -- spawnPlayerCart : fait APPARAITRE le chariot du joueur (le parente au monde, le pose au depart),
 -- remet sa course a zero et y assoit le joueur. Cree le pc au besoin.
-function spawnPlayerCart(player)
+function spawnPlayerCart(player, wantLane)
 	local char = player and player.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	if not hrp then return end
 	local pc = playerCarts[player] or makePlayerCart(player)
-	-- VOIE DE DEPART : on attribue la 1ere voie libre (gardee pour la session) -> chacun son cote
+	-- VOIE DE DEPART : la GARE DU BOUTON TOUCHE d'abord (si libre) -> tu spawnes la ou tu es.
+	-- Sinon (pas de demande / voie prise) : 1ere voie libre. La voie peut changer si tu vas
+	-- sur une autre gare plus tard (tant qu'elle est libre).
+	local taken = {}
+	for _, o in pairs(playerCarts) do if o ~= pc and o.laneSlot then taken[o.laneSlot] = true end end
+	if wantLane ~= nil then
+		for i, off in ipairs(START_LANE_OFFSETS) do
+			if off == wantLane and not taken[i] then pc.laneSlot = i; pc.laneX = off; break end
+		end
+	end
 	if not pc.laneX then
-		local taken = {}
-		for _, o in pairs(playerCarts) do if o ~= pc and o.laneSlot then taken[o.laneSlot] = true end end
 		local slot = 1
 		for i = 1, #START_LANE_OFFSETS do if not taken[i] then slot = i; break end end
 		pc.laneSlot = slot; pc.laneX = START_LANE_OFFSETS[slot]
 	end
 	local cart, seat = pc.cart, pc.seat
 	if cart.Parent ~= Workspace then cart.Parent = Workspace end
-	cart:PivotTo((renderAtDistance(0)) * CFrame.new(pc.laneX, 0, 0))
+	local dGare = laneStartDist(pc.laneX)
+	cart:PivotTo((renderAtDistance(dGare)) * CFrame.new(laneOffsetAt(pc.laneX, dGare), 0, 0))
 	pc.spawned = true
-	-- course remise a zero (comme le faisait l'ancien handler du siege a l'embarquement)
+	-- course remise a zero, AU BOUT DE LA GARE (distance negative = approche a parcourir)
 	local state = pc.state
-	state.distance = 0; state.speed = 0; state.lastSeg = 0
+	state.distance = dGare; state.speed = 0; state.lastSeg = 0
 	state.curStage = 1; state.stageStart = 0; state.respawnDist = 0
 	state.grip = 0; state.lean = 0; state.lastLean = nil
 	state.boostLevel = 0; state.boostSpeed = 0; state.boostGrip = 0; state.maxReached = 0
 	state.derailing = false; state.airborne = false
 	recomputeMaxSpeed(pc)
 	-- on place le perso sur le chariot puis on l'assoit
-	char:PivotTo((renderAtDistance(0)) * CFrame.new(pc.laneX, 3, 0))
+	char:PivotTo((renderAtDistance(dGare)) * CFrame.new(laneOffsetAt(pc.laneX, dGare), 3, 0))
 	task.wait(0.12)
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	if hum then seat:Sit(hum) end
@@ -2673,31 +3183,26 @@ local function buildEconomy()
 			flashCenter(player, "❌ Renaissance : " .. cost .. " pieces requises", Color3.fromRGB(255, 120, 120), 2.5)
 		end
 	end
-	local function buyPad(off, col, fn)
+	local function buyPad(off, col, fn, label)
 		local p = makePart(Vector3.new(9, 0.5, 6), cf0 * off, col, Enum.Material.Neon, trackFolder)
+		if label then   -- etiquette flottante sobre au-dessus du pad (remplace les gros kiosques)
+			local bb = Instance.new("BillboardGui")
+			bb.Size = UDim2.new(0, 180, 0, 42); bb.StudsOffset = Vector3.new(0, 3.2, 0)
+			bb.MaxDistance = 90; bb.Adornee = p; bb.Parent = p
+			local bt = Instance.new("TextLabel")
+			bt.Size = UDim2.new(1, 0, 1, 0); bt.BackgroundTransparency = 1
+			bt.Font = Enum.Font.GothamBlack; bt.TextScaled = true
+			bt.TextColor3 = Color3.new(1, 1, 1); bt.TextStrokeTransparency = 0.25
+			bt.Text = label; bt.Parent = bb
+		end
 		local cdb = {}
 		p.Touched:Connect(function(hit)
 			local plr = Players:GetPlayerFromCharacter(hit.Parent)
 			if plr and not cdb[plr] then cdb[plr] = true; fn(plr); task.delay(1.2, function() cdb[plr] = nil end) end
 		end)
 	end
-	-- ===== BOUTON "AMELIORER" cliquable : un clic achete le chariot suivant DIRECT =====
-	local upgPos = (cf0 * CFrame.new(36, 6, 56)).Position
-	local ctrPos = (cf0 * CFrame.new(0, 6, 46)).Position
-	local upgPart = makePart(Vector3.new(13, 6.5, 0.6),
-		CFrame.lookAt(upgPos, Vector3.new(ctrPos.X, upgPos.Y, ctrPos.Z)),
-		Color3.fromRGB(36, 150, 64), Enum.Material.Neon, trackFolder)
-	local usg = Instance.new("SurfaceGui")
-	usg.Face = Enum.NormalId.Front; usg.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
-	usg.PixelsPerStud = 35; usg.Adornee = upgPart; usg.Parent = upgPart
-	local ulbl = Instance.new("TextLabel")
-	ulbl.Size = UDim2.new(0.92, 0, 0.84, 0); ulbl.Position = UDim2.new(0.04, 0, 0.08, 0)
-	ulbl.BackgroundTransparency = 1; ulbl.TextScaled = true; ulbl.TextWrapped = true
-	ulbl.TextXAlignment = Enum.TextXAlignment.Center; ulbl.TextYAlignment = Enum.TextYAlignment.Center
-	ulbl.Font = Enum.Font.GothamBlack; ulbl.TextColor3 = Color3.new(1, 1, 1); ulbl.TextStrokeTransparency = 0.4
-	-- panneau GENERIQUE : avec un chariot PAR JOUEUR, on ne peut plus afficher UN seul prix.
-	-- Le panneau dit juste "AMELIORER" ; le vrai parcours d'achat (par joueur) est le menu a l'ecran.
-	ulbl.Text = "⬆ AMELIORER\ntes stats"; ulbl.Parent = usg
+	-- (gros panneau mural "AMELIORER tes stats" SUPPRIME : hub epure, le menu a l'ecran
+	--  + le pad au sol suffisent.)
 	-- doUpgrade(plr) : ameliore la STAT selectionnee DU joueur qui clique, puis rafraichit SON menu.
 	local function doUpgrade(plr)
 		local pc = playerCarts[plr]; if not pc then return end
@@ -2705,18 +3210,24 @@ local function buildEconomy()
 		local gg = guis[plr]; if gg then refreshMenu(gg) end
 	end
 	upgradeFn = doUpgrade   -- le bouton ecran (RemoteEvent) appellera ca
-	local ucd = Instance.new("ClickDetector"); ucd.MaxActivationDistance = 50; ucd.Parent = upgPart
-	ucd.MouseClick:Connect(doUpgrade)
-	buyPad(CFrame.new(30, -2.4, 64), Color3.fromRGB(90, 220, 120), doUpgrade)
-	buyPad(CFrame.new(30, -2.4, 48), Color3.fromRGB(200, 130, 240), doRebirth)
+	-- (pads STATS / RENAISSANCE retires du spawn : un vrai MENU les remplacera bientot.
+	--  doUpgrade reste branche au bouton ecran ; doRebirth attend son futur menu.)
 	-- pad TEST (mode debug seulement) : recharge l'argent pour essayer les chariots.
 	if DEBUG then
-		buyPad(CFrame.new(30, -2.4, 32), Color3.fromRGB(255, 180, 60), function(player)
+		buyPad(CFrame.new(40, -2.4, 32), Color3.fromRGB(255, 180, 60), function(player)
 			local pc = playerCarts[player]; if not pc then return end
 			pc.state.score = pc.state.score + 1000000
 			setWallet(player); updateLeaderstats(player)
 			if player then flashCenter(player, "🧪 TEST : +1 000 000 pieces", Color3.fromRGB(255, 210, 90), 2) end
-		end)
+		end, "🧪 +1M (TEST)")
+		-- pad TEST : saute direct au MONDE SUIVANT (tester les biomes sans finir le circuit).
+		-- advanceWorldFn = alias global rempli plus bas (advanceWorld est defini apres nous).
+		buyPad(CFrame.new(40, -2.4, 18), Color3.fromRGB(180, 120, 255), function(player)
+			if advanceWorldFn then
+				if player then flashCenter(player, "🧪 TEST : MONDE SUIVANT !", Color3.fromRGB(210, 160, 255), 2) end
+				advanceWorldFn(player)
+			end
+		end, "🧪 MONDE SUIVANT (TEST)")
 	end
 end
 buildEconomy()
@@ -2814,6 +3325,7 @@ local function advanceWorld(triggerPlayer)
 	end
 	task.delay(0.7, function() rebuilding = false end)
 end
+advanceWorldFn = advanceWorld   -- alias GLOBAL : pour les pads crees AVANT cette ligne (piege "ordre des fonctions")
 
 -- ===================== RAILS FANTOMES : cycle apparition / disparition =====================
 -- Les parties de voie taggees "Phantom" (cyan) clignotent puis DISPARAISSENT en rythme.
@@ -2871,6 +3383,80 @@ RunService.Heartbeat:Connect(function(dt)
 			end
 		end
 	end
+	-- STALACTITES (grotte) : pendent -> TREMBLENT + s'allument (telegraphe) -> TOMBENT -> remontent
+	if STALAGS then
+		for _, s in ipairs(STALAGS) do
+			local ph = (TRAP_T + s.off) % 5.6
+			local base = s.top
+			if ph < 3.2 then              -- accrochee au plafond
+				s.falling = false
+				for _, pp in ipairs(s.parts) do if pp.part.Parent then pp.part.CFrame = base * pp.off end end
+				s.light.Brightness = 1.2
+			elseif ph < 4.2 then          -- TELEGRAPHE : tremble + la pointe brille de + en +
+				s.falling = false
+				local sh = (ph - 3.2) * 0.55
+				local jit = CFrame.new(math.noise(TRAP_T * 18, s.dist) * sh, 0, math.noise(s.dist, TRAP_T * 18) * sh)
+				for _, pp in ipairs(s.parts) do if pp.part.Parent then pp.part.CFrame = base * jit * pp.off end end
+				s.light.Brightness = 1.2 + 6 * (ph - 3.2)
+			else                          -- CHUTE (rapide), puis reste plantee avant de remonter
+				local t = math.clamp((ph - 4.2) / 0.5, 0, 1)
+				s.falling = t > 0.12 and t < 1
+				local drop = CFrame.new(0, -24 * t, 0)
+				for _, pp in ipairs(s.parts) do if pp.part.Parent then pp.part.CFrame = base * drop * pp.off end end
+			end
+		end
+	end
+
+	-- ROCHERS ROULANTS (grotte) : va-et-vient sinusoidal + rotation de roulement
+	if BOULDERS then
+		for _, b in ipairs(BOULDERS) do
+			if b.ball.Parent then
+				local bx = math.sin(TRAP_T * b.freq + b.off) * b.amp
+				b.x = bx
+				b.ball.CFrame = b.base * CFrame.new(bx, 0, 0) * CFrame.Angles(0, 0, -bx / 3.5)
+			end
+		end
+	end
+	-- MACHOIRES DE PIERRE (grotte) : ouvertes -> TREMBLENT (telegraphe) -> SNAP fermees -> reouvrent
+	if JAWS then
+		for _, j in ipairs(JAWS) do
+			local ph = (TRAP_T + j.off) % 4.8
+			local push, shake = 0, 0
+			j.snapping = false
+			if ph < 3.0 then
+				push = 0
+			elseif ph < 3.8 then
+				shake = (ph - 3.0) * 0.4
+			elseif ph < 4.15 then
+				push = 5.2; j.snapping = true
+			else
+				push = math.max(0, 5.2 * (1 - (ph - 4.15) / 0.5))
+			end
+			for side, list in pairs({ [-1] = j.l, [1] = j.r }) do
+				local jitter = (shake > 0) and CFrame.new(math.noise(TRAP_T * 16, j.dist + side) * shake, 0, 0) or CFrame.new()
+				for _, pp in ipairs(list) do
+					if pp.part.Parent then pp.part.CFrame = j.base * jitter * CFrame.new(-side * push, 0, 0) * pp.off end
+				end
+			end
+		end
+	end
+	-- CHAUVES-SOURIS (grotte) : tournoient autour de leur nuee, ailes qui battent, tete devant
+	if BATS then
+		for _, sw in ipairs(BATS) do
+			for _, b in ipairs(sw.parts) do
+				if b.body.Parent then
+					local a = TRAP_T * 1.6 * b.rr + b.ph + sw.phase
+					local flap = math.sin(TRAP_T * 9 + b.ph) * 0.7
+					local bodyCF = CFrame.new(sw.center + Vector3.new(math.cos(a) * sw.r * b.rr, math.sin(a * 2.3) * 1.6, math.sin(a) * sw.r * b.rr))
+						* CFrame.Angles(0, -a, 0)
+					b.body.CFrame = bodyCF
+					b.head.CFrame = bodyCF * CFrame.new(0, 0.25, -1.0)
+					b.wl.CFrame = bodyCF * CFrame.new(-1.25, 0.15, 0) * CFrame.Angles(0, 0, flap)
+					b.wr.CFrame = bodyCF * CFrame.new(1.25, 0.15, 0) * CFrame.Angles(0, 0, -flap)
+				end
+			end
+		end
+	end
 end)
 
 -- checkTraps : collisions des PIEGES non-hache (boule a chaine pendulaire pour l'instant ;
@@ -2884,7 +3470,7 @@ function checkTraps(pc, player)
 			if ob.swing and math.abs(state.distance - ob.dist) < 4.5 then
 				local ang = ob.amp * math.sin(TRAP_T * ob.freq + ob.off)
 				if math.abs(ang) < 0.30 then
-					if player then flashCenter(player, "⛓️ La boule à chaîne t'a fauché !", Color3.fromRGB(255, 120, 90), 1.8) end
+					if player then flashCenter(player, ob.msg or "⛓️ La boule à chaîne t'a fauché !", Color3.fromRGB(255, 120, 90), 1.8) end
 					derail(player)
 					return true
 				end
@@ -2898,6 +3484,39 @@ function checkTraps(pc, player)
 			if g.erupting and math.abs(state.distance - g.dist) < 4.5 then
 				if player then flashCenter(player, "🌋 Geyser de lave !", Color3.fromRGB(255, 130, 60), 1.8) end
 				derail(player, nil, true)
+				return true
+			end
+		end
+	end
+
+	-- STALACTITES (grotte) : la pointe tombe PILE quand on passe dessous -> fauche le chariot
+	if STALAGS then
+		for _, s in ipairs(STALAGS) do
+			if s.falling and math.abs(state.distance - s.dist) < 4 then
+				if player then flashCenter(player, "🪨 Stalactite !", Color3.fromRGB(160, 220, 255), 1.8) end
+				derail(player)
+				return true
+			end
+		end
+	end
+
+	-- ROCHER ROULANT (grotte) : mortel quand la boule est AU CENTRE de la voie
+	if BOULDERS then
+		for _, b in ipairs(BOULDERS) do
+			if math.abs(state.distance - b.dist) < 4 and math.abs(b.x or 99) < 4.5 then
+				if player then flashCenter(player, "🪨 Écrasé par le rocher roulant !", Color3.fromRGB(200, 190, 230), 1.8) end
+				derail(player)
+				return true
+			end
+		end
+	end
+
+	-- MACHOIRES DE PIERRE (grotte) : mortelles pendant le SNAP
+	if JAWS then
+		for _, j in ipairs(JAWS) do
+			if j.snapping and math.abs(state.distance - j.dist) < 4 then
+				if player then flashCenter(player, "⛰️ Broyé par la mâchoire de pierre !", Color3.fromRGB(200, 190, 230), 1.8) end
+				derail(player)
 				return true
 			end
 		end
@@ -2938,7 +3557,7 @@ local function stepCart(pc, dt)
 		end
 	end
 	state.speed = math.clamp(state.speed, -REVERSE_MAX, state.maxSpeed)
-	state.distance = math.clamp(state.distance + state.speed * dt, 0, TOTAL_DIST)
+	state.distance = math.clamp(state.distance + state.speed * dt, laneStartDist(pc.laneX), TOTAL_DIST)
 
 	if state.distance >= TOTAL_DIST then
 		-- FIN DU MONDE : felicitations + passage au MONDE SUIVANT (nouveau trace,
@@ -2953,9 +3572,14 @@ local function stepCart(pc, dt)
 	end
 
 	local cf, seg = renderAtDistance(state.distance)
-	-- VOIES DE DEPART : on rejoint le centre en douceur (decale au depart -> 0 apres MERGE_DIST)
-	local laneOff = (pc.laneX or 0) * laneFade(state.distance, pc.laneX)
-	if laneOff ~= 0 then cf = cf * CFrame.new(laneOff, 0, 0) end
+	-- VOIES DE DEPART : d NEGATIF = la voie de GARE qui serpente sur la plaque ; d POSITIF =
+	-- decalage lateral qui fusionne en escalier (laneFade). Yaw oriente le chariot le long de
+	-- la courbe (sinon il avancerait "en crabe" dans les virages de gare).
+	local laneOff = laneOffsetAt(pc.laneX, state.distance)
+	if laneOff ~= 0 or state.distance < 0 then
+		local ahead = laneOffsetAt(pc.laneX, state.distance + 3)
+		cf = cf * CFrame.new(laneOff, 0, 0) * CFrame.Angles(0, math.atan2(laneOff - ahead, 3), 0)
+	end
 	local meta = segMeta[seg]
 
 	-- RAILS FANTOMES : si on est sur une section "phantom" alors qu'elle a DISPARU -> on TOMBE
@@ -3176,8 +3800,10 @@ RunService.Heartbeat:Connect(function()
 		local char = p.Character
 		local hrp = char and char:FindFirstChild("HumanoidRootPart")
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
-		if hrp and hum and not hum.Sit and hrp.Position.Y < DEATH_Y then
-			placeInHub(char)   -- a pied et tombe -> retour au hub
+		-- a pied : seuil PLUS HAUT que pour les chariots (DEATH_Y + 3.5) -> impossible de se
+		-- balader en bas sur le sol de lave : des qu'on passe sous la voie, retour DIRECT en haut.
+		if hrp and hum and not hum.Sit and hrp.Position.Y < DEATH_Y + 3.5 then
+			placeInHub(char)   -- a pied et tombe -> respawn direct en haut (hub)
 		end
 	end
 end)
