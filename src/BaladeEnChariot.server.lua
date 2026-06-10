@@ -184,6 +184,7 @@ local rng = Random.new(SEED)   -- re-graine par monde dans genTrack()
 local nodes, bank, segMeta, cursor
 local obstacleDists, obstacleBlades   -- OBSTACLES : grandes lames qui balaient la voie (timing)
 local obstaclePhase = 0
+TRAP_T = 0   -- horloge globale des PIEGES (boule a chaine pendulaire, geyser...) ; GLOBAL = ne compte pas dans la limite 200 locals
 local NSEG, renderNodes, cumDist, TOTAL_DIST, STAGE_LEN, checkpoints
 
 local function addSegment(yaw, pitch, kind, safe, derailable, bk, leanDir)
@@ -729,6 +730,54 @@ end
 				end
 			table.insert(obstacleDists, cumDist[oseg])
 			table.insert(obstacleBlades, { parts = aparts, axle = axleCF })
+		end
+	end
+
+	-- BOULES A CHAINE ENFLAMMEES (pendule) : variante de la hache. Bras rigide (chaine + boule a
+	-- pointes Neon en feu) qui BALANCE en travers de la voie -> on passe quand la boule est sur le cote.
+	local lastChain = -1e9
+	for oseg = 24, NSEG - 5 do
+		if segMeta[oseg].kind == "straight" and renderNodes[oseg].UpVector.Y > 0.95 and cumDist[oseg] - lastChain > 720 then
+			lastChain = cumDist[oseg]
+			local ocf = renderNodes[oseg]
+			makePart(Vector3.new(1.2, 13, 1.2), ocf * CFrame.new(-5.5, 6.5, 0), Color3.fromRGB(34, 28, 26), Enum.Material.Metal)
+			makePart(Vector3.new(1.2, 13, 1.2), ocf * CFrame.new( 5.5, 6.5, 0), Color3.fromRGB(34, 28, 26), Enum.Material.Metal)
+			makePart(Vector3.new(13, 1.2, 1.2), ocf * CFrame.new(0, 13, 0), Color3.fromRGB(34, 28, 26), Enum.Material.Metal)
+			local axleCF = ocf * CFrame.new(0, 13, 0)
+			local bparts = {}
+			local function cpart(size, loc, color, mat)
+				local pp = makePart(size, axleCF * loc, color, mat); pp.CanCollide = false
+				table.insert(bparts, { part = pp, off = loc }); return pp
+			end
+			for li = 1, 4 do cpart(Vector3.new(0.9, 1.5, 0.5), CFrame.new(0, -1.6 - li * 1.5, 0), Color3.fromRGB(42, 42, 48), Enum.Material.Metal) end
+			-- VRAIE BOULE DE FEU (facon soleil/plasma) : halo lumineux + corps Neon orange VIF + gros
+			-- feu + particules de flammes (pas de pointes -> aspect lisse comme la ref).
+			local halo = cpart(Vector3.new(9.4, 9.4, 9.4), CFrame.new(0, -10.5, 0), Color3.fromRGB(255, 80, 16), Enum.Material.Neon); halo.Shape = Enum.PartType.Ball; halo.Transparency = 0.5
+			local ball = cpart(Vector3.new(6.2, 6.2, 6.2), CFrame.new(0, -10.5, 0), Color3.fromRGB(255, 186, 78), Enum.Material.Neon); ball.Shape = Enum.PartType.Ball
+			local fire = Instance.new("Fire"); fire.Size = 16; fire.Heat = 18; fire.Color = Color3.fromRGB(255, 150, 40); fire.SecondaryColor = Color3.fromRGB(255, 58, 10); fire.Parent = ball
+			local pe = Instance.new("ParticleEmitter"); pe.LightEmission = 1; pe.LightInfluence = 0
+			pe.Color = ColorSequence.new(Color3.fromRGB(255, 210, 95), Color3.fromRGB(255, 58, 12))
+			pe.Size = NumberSequence.new(3.6, 0.2); pe.Transparency = NumberSequence.new(0.1, 1)
+			pe.Lifetime = NumberRange.new(0.45, 0.75); pe.Rate = 42; pe.Speed = NumberRange.new(2, 6); pe.SpreadAngle = Vector2.new(38, 38); pe.Parent = ball
+			local bpl = Instance.new("PointLight"); bpl.Range = 28; bpl.Brightness = 4.2; bpl.Color = Color3.fromRGB(255, 128, 42); bpl.Parent = ball
+			table.insert(obstacleBlades, { parts = bparts, axle = axleCF, swing = true, off = lastChain % 6.28, amp = 1.2, freq = 1.9, dist = cumDist[oseg] })
+		end
+	end
+
+	-- GEYSERS DE LAVE : faille qui ROUGEOIE + pulse (telegraphe), puis COLONNE Neon qui JAILLIT sur
+	-- un timer. Etre dessus pendant l'eruption = projete en l'air. (cycle gere dans la boucle Heartbeat)
+	GEYSERS = {}
+	local lastGeyser = -1e9
+	for oseg = 18, NSEG - 5 do
+		if segMeta[oseg].kind == "straight" and renderNodes[oseg].UpVector.Y > 0.95 and cumDist[oseg] - lastGeyser > 560 then
+			lastGeyser = cumDist[oseg]
+			local ocf = renderNodes[oseg]
+			local fault = makePart(Vector3.new(8, 0.5, 5.5), ocf * CFrame.new(0, 0.25, 0), Color3.fromRGB(36, 14, 10), Enum.Material.CrackedLava); fault.CanCollide = false
+			local glow = makePart(Vector3.new(6, 0.4, 3.8), ocf * CFrame.new(0, 0.5, 0), Color3.fromRGB(255, 70, 18), Enum.Material.Neon); glow.CanCollide = false
+			local col = makePart(Vector3.new(5.5, 34, 5.5), ocf * CFrame.new(0, 17, 0), Color3.fromRGB(255, 135, 35), Enum.Material.Neon); col.CanCollide = false; col.Transparency = 1
+			local cfire = Instance.new("Fire"); cfire.Size = 24; cfire.Heat = 12; cfire.Enabled = false; cfire.Color = Color3.fromRGB(255, 150, 40); cfire.SecondaryColor = Color3.fromRGB(255, 60, 12); cfire.Parent = col
+			local clight = Instance.new("PointLight"); clight.Range = 30; clight.Brightness = 0.5; clight.Color = Color3.fromRGB(255, 100, 36); clight.Parent = glow
+			table.insert(GEYSERS, { glow = glow, col = col, fire = cfire, light = clight, dist = cumDist[oseg], off = lastGeyser % 5.0 })
 		end
 	end
 
@@ -2794,15 +2843,67 @@ end)
 -- ===================== OBSTACLES : rotation des lames (tournent en continu) =====================
 RunService.Heartbeat:Connect(function(dt)
 	obstaclePhase = (obstaclePhase + dt * 3.0) % (2 * math.pi)
+	TRAP_T = TRAP_T + dt
 	if obstacleBlades then
 		for _, ob in ipairs(obstacleBlades) do
-			local rot = ob.axle * CFrame.Angles(0, 0, obstaclePhase)
+			-- haches = rotation continue ; boules a chaine (swing) = balancier (sinus)
+			local ang = ob.swing and (ob.amp * math.sin(TRAP_T * ob.freq + ob.off)) or obstaclePhase
+			local rot = ob.axle * CFrame.Angles(0, 0, ang)
 			for _, pp in ipairs(ob.parts) do
 				if pp.part.Parent then pp.part.CFrame = rot * pp.off end
 			end
 		end
 	end
+	-- GEYSERS : cycle dormant -> telegraphe (la faille rougeoie de + en +) -> eruption (colonne + feu)
+	if GEYSERS then
+		for _, g in ipairs(GEYSERS) do
+			local ph = (TRAP_T + g.off) % 4.6
+			if ph < 3.0 then            -- DORMANT
+				g.erupting = false; g.col.Transparency = 1; g.fire.Enabled = false
+				g.glow.Transparency = 0.35; g.light.Brightness = 0.5
+			elseif ph < 4.0 then        -- TELEGRAPHE : ca rougeoie de + en + (1s d'avertissement)
+				local t = ph - 3.0
+				g.erupting = false; g.col.Transparency = 1; g.fire.Enabled = false
+				g.glow.Transparency = 0.35 - 0.35 * t; g.light.Brightness = 0.5 + 4 * t
+			else                        -- ERUPTION : colonne Neon + feu (~0.6s)
+				g.erupting = true; g.col.Transparency = 0.08; g.fire.Enabled = true
+				g.glow.Transparency = 0; g.light.Brightness = 6
+			end
+		end
+	end
 end)
+
+-- checkTraps : collisions des PIEGES non-hache (boule a chaine pendulaire pour l'instant ;
+-- geysers/pads viendront ici). Renvoie true si le joueur deraille -> stepCart fait alors return.
+-- GLOBAL (cf. limite 200 locals) ; defini apres derail() qu'il appelle.
+function checkTraps(pc, player)
+	local state = pc.state
+	if obstacleBlades then
+		for _, ob in ipairs(obstacleBlades) do
+			-- boule a chaine : dangereuse quand elle PASSE AU CENTRE (bas) de son balancier.
+			if ob.swing and math.abs(state.distance - ob.dist) < 4.5 then
+				local ang = ob.amp * math.sin(TRAP_T * ob.freq + ob.off)
+				if math.abs(ang) < 0.30 then
+					if player then flashCenter(player, "⛓️ La boule à chaîne t'a fauché !", Color3.fromRGB(255, 120, 90), 1.8) end
+					derail(player)
+					return true
+				end
+			end
+		end
+	end
+
+	-- GEYSERS : si une colonne JAILLIT pile quand on est dessus -> projete en l'air (launch)
+	if GEYSERS then
+		for _, g in ipairs(GEYSERS) do
+			if g.erupting and math.abs(state.distance - g.dist) < 4.5 then
+				if player then flashCenter(player, "🌋 Geyser de lave !", Color3.fromRGB(255, 130, 60), 1.8) end
+				derail(player, nil, true)
+				return true
+			end
+		end
+	end
+	return false
+end
 
 -- ===================== BOUCLE PRINCIPALE (par chariot) =====================
 -- stepCart : fait avancer LE chariot d'UN joueur (pc) pour une frame. Corps quasi identique a
@@ -2875,6 +2976,9 @@ local function stepCart(pc, dt)
 			end
 		end
 	end
+
+	-- PIEGES (boule a chaine, etc.) : meme principe que les haches, gere dans checkTraps.
+	if checkTraps(pc, player) then return end
 
 	-- (Le respawn vise desormais le dernier CHECKPOINT VISIBLE franchi = state.stageStart, ou le
 	-- hub du debut si aucun. Voir derail / returnToCheckpoint. Plus de "checkpoint invisible".)
