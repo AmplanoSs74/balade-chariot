@@ -35,28 +35,24 @@ local RAIL_STEP      = 3                               -- finesse des rails (plu
 local RIDE_HEIGHT    = 2.4
 -- VOIES DE DEPART (multijoueur) : chaque joueur apparait sur SA voie laterale, qui rejoint la voie
 -- centrale en douceur sur les premiers studs. Offset 0 = voie principale (1er joueur).
-local START_LANE_OFFSETS = { 0, -12, 12 }
+local START_LANE_OFFSETS = { 0, -13, 13, -26, 26 }   -- 5 voies de depart (1 bouton chacune) ; alignees aux boutons du hub
 local MERGE_DIST = 70
 local function laneFade(d, L) local sw = MERGE_DIST * 0.5; if d < sw then return 1 end; local x = math.clamp((MERGE_DIST - d) / (MERGE_DIST - sw), 0, 1); return x * x * (3 - 2 * x) end  -- voies PARALLELES puis aiguillage COURT a la fin (comme de vrais rails, pas un eventail)
 
-local MAX_SPEED   = 85   -- (ancienne base, remplacee par les CHARIOTS ci-dessous)
+MAX_SPEED   = 85   -- global (cf. limite 200 locals) ; ancienne base, remplacee par les CHARIOTS
 -- 10 CHARIOTS a acheter avec des pieces. Chacun : va plus vite (max ~ km/h), tient mieux
 -- les virages ET decolle/crashe moins (plus stable). Le joueur FARM pour passer au suivant.
 -- chaque chariot : max(km/h), grip, prix, + un LOOK (body/trim/matiere) et un SON (pitch
 -- de plus en plus aigu/puissant ; sound = ID custom optionnel, ex: le son du Legendaire).
 local CARTS = {
-	-- DEBUT faible + cheap (dopamine : on upgrade vite), puis de + en + cher (le dernier = gros
-	-- farm, vise 15-20h). Prix a AFFINER via les logs (je mesure le revenu reel et j'ajuste).
-	{ name="Chariot Bois",  max=42,  grip=0.00, brake=14,  price=0,        body=Color3.fromRGB(124,78,46),   trim=Color3.fromRGB(92,60,34),   mat=Enum.Material.WoodPlanks, pitch=0.82 },
-	{ name="Chariot Fer",   max=58,  grip=0.06, brake=24,  price=150,      body=Color3.fromRGB(108,82,58),   trim=Color3.fromRGB(120,122,130),mat=Enum.Material.WoodPlanks, pitch=0.90 },
-	{ name="Chariot Acier", max=76,  grip=0.13, brake=36,  price=600,      body=Color3.fromRGB(120,126,134), trim=Color3.fromRGB(185,190,196),mat=Enum.Material.Metal,      pitch=0.98 },
-	{ name="Bolide",        max=95,  grip=0.22, brake=48,  price=2500,     body=Color3.fromRGB(190,40,40),   trim=Color3.fromRGB(235,235,240),mat=Enum.Material.Metal,      pitch=1.05 },
-	{ name="Turbo",         max=115, grip=0.32, brake=62,  price=10000,    body=Color3.fromRGB(255,120,30),  trim=Color3.fromRGB(40,42,48),   mat=Enum.Material.Metal,      pitch=1.12 },
-	{ name="Fusee",         max=135, grip=0.43, brake=76,  price=45000,    body=Color3.fromRGB(235,235,245), trim=Color3.fromRGB(255,90,30),  mat=Enum.Material.Metal,      pitch=1.18 },
-	{ name="Plasma",        max=155, grip=0.55, brake=90,  price=200000,   body=Color3.fromRGB(70,200,255),  trim=Color3.fromRGB(255,255,255),mat=Enum.Material.Neon,       pitch=1.24 },
-	{ name="Quantum",       max=175, grip=0.68, brake=104, price=1000000,  body=Color3.fromRGB(170,90,255),  trim=Color3.fromRGB(235,205,255),mat=Enum.Material.Neon,       pitch=1.30 },
-	{ name="Cosmic",        max=195, grip=0.82, brake=118, price=8000000,  body=Color3.fromRGB(40,255,180),  trim=Color3.fromRGB(205,255,238),mat=Enum.Material.Neon,       pitch=1.36 },
-	{ name="Legendaire",    max=215, grip=0.98, brake=132, price=60000000, body=Color3.fromRGB(255,215,40),  trim=Color3.fromRGB(255,255,255),mat=Enum.Material.Neon,       pitch=1.45, legend=true },
+	-- 5 chariots THEMATIQUES (1 par biome). Enfer = le starter "nul" (faible + grip 0 = deraille
+	-- facile). On monte les STATS avec les pieces (menu d'amelioration). Skins plus tard.
+	-- champ theme = sert aux designs visuels (enfer/grotte/ville/montagne/paradis).
+	{ name="Chariot Enfer",    theme="enfer",    max=42,  grip=0.00, brake=24,  price=0,      body=Color3.fromRGB(58,34,30),    trim=Color3.fromRGB(98,52,32),   mat=Enum.Material.WoodPlanks, pitch=0.84 },
+	{ name="Chariot Grotte",   theme="grotte",   max=74,  grip=0.18, brake=34,  price=600,    body=Color3.fromRGB(92,94,104),   trim=Color3.fromRGB(90,185,255), mat=Enum.Material.Slate,      pitch=0.94 },
+	{ name="Chariot Ville",    theme="ville",    max=110, grip=0.36, brake=56,  price=6000,   body=Color3.fromRGB(150,156,166), trim=Color3.fromRGB(120,205,255),mat=Enum.Material.Metal,      pitch=1.06 },
+	{ name="Chariot Montagne", theme="montagne", max=152, grip=0.56, brake=84,  price=60000,  body=Color3.fromRGB(120,82,50),   trim=Color3.fromRGB(108,112,120),mat=Enum.Material.WoodPlanks, pitch=1.16 },
+	{ name="Chariot Paradis",  theme="paradis",  max=212, grip=0.85, brake=124, price=600000, body=Color3.fromRGB(245,245,252), trim=Color3.fromRGB(255,216,96), mat=Enum.Material.Neon,       pitch=1.32, legend=true },
 }
 local KMH = 1.0   -- facteur studs/s -> km/h (1 stud ~ 1 km/h)
 
@@ -72,6 +68,30 @@ local askBrowse = Instance.new("RemoteEvent")
 askBrowse.Name = "AskBrowse"
 askBrowse.Parent = ReplicatedStorage
 local upgradeFn   -- (re)defini par buildEconomy
+
+-- ===== AMELIORATION DES STATS (par joueur, payee avec les pieces) =====
+-- 3 stats ameliorables ; chaque niveau coute de + en + cher. (Accel/skins plus tard.)
+-- /!\ Declarees en GLOBAL (pas 'local') VOLONTAIREMENT : ce gros script frole la limite Luau
+-- de 200 variables LOCALES par fonction. Les globales n'y comptent PAS -> evite le crash
+-- "Out of local registers ... exceeded limit 200". (idem biomeCartTier / MAX_SPEED.)
+SPEED_STEP  = 9      -- +9 km/h par niveau de VITESSE
+GRIP_STEP   = 0.06   -- +0.06 d'ADHERENCE par niveau (= moins de deraillement)
+BRAKE_STEP  = 9      -- +9 de FREIN par niveau
+STAT_MAXLVL = 12     -- niveau max par stat
+STAT_INFO = {
+	{ key = "speed", name = "VITESSE",   base = 60 },   -- base = cout du 1er niveau
+	{ key = "grip",  name = "ADHÉRENCE", base = 50 },
+	{ key = "brake", name = "FREIN",     base = 40 },
+}
+function statLevel(state, i)
+	if i == 1 then return state.lvlSpeed
+	elseif i == 2 then return state.lvlGrip
+	else return state.lvlBrake end
+end
+function statCost(i, lvl)   -- cout du PROCHAIN niveau (croissant)
+	return math.floor(STAT_INFO[i].base * (1.5 ^ lvl) + 0.5)
+end
+
 local REVERSE_MAX = 28
 local ACCEL       = 30
 local BRAKE       = 60
@@ -142,14 +162,17 @@ local ZONES = {
 -- ORDRE DES MONDES : ENFER -> VILLE -> MONTAGNE -> PARADIS (l'ascension), puis on reboucle + dur.
 -- zone = index dans ZONES ; seed = graine du trace ; accent = couleur d'ambiance du monde.
 local WORLDS = {
-	{ zone = 1, name = "ENFER",    seed = 101, accent = Color3.fromRGB(255,  90,  45) },
-	{ zone = 2, name = "VILLE",    seed = 202, accent = Color3.fromRGB(120, 200, 255) },
-	{ zone = 3, name = "MONTAGNE", seed = 303, accent = Color3.fromRGB(175, 210, 255) },
-	{ zone = 4, name = "PARADIS",  seed = 404, accent = Color3.fromRGB(255, 235, 150) },
+	-- cart = index du CHARIOT thematique de ce biome (Grotte=2 reserve au futur biome Grotte).
+	{ zone = 1, name = "ENFER",    seed = 101, cart = 1, accent = Color3.fromRGB(255,  90,  45) },
+	{ zone = 2, name = "VILLE",    seed = 202, cart = 3, accent = Color3.fromRGB(120, 200, 255) },
+	{ zone = 3, name = "MONTAGNE", seed = 303, cart = 4, accent = Color3.fromRGB(175, 210, 255) },
+	{ zone = 4, name = "PARADIS",  seed = 404, cart = 5, accent = Color3.fromRGB(255, 235, 150) },
 }
 local NSTAGES = 3   -- le circuit est decoupe en 3 grandes etapes (zones safe)
 local currentWorldIndex = 1   -- numero du monde courant (peut depasser #WORLDS)
 local function worldCfg(w) return WORLDS[((w - 1) % #WORLDS) + 1] end  -- les themes rebouclent
+-- chariot du biome courant (1..#CARTS) : on conduit le chariot du theme ou on se trouve.
+function biomeCartTier() return worldCfg(currentWorldIndex).cart or 1 end   -- global (cf. limite 200 locals)
 
 -- theme courant (suit le monde courant). Tout le decor/sol/ballast suit CURRENT_ZONE.
 local CURRENT_ZONE = 1
@@ -1499,12 +1522,12 @@ local function buildHub()
 	end
 
 	-- ---- SOL (GRAND, agrandi) : dalle + damier + bordures neon ----
-	local HW = 62               -- demi-largeur du hub (avant 49 -> plus grand)
-	local FZ, BZ = -4, 92
+	local HW = 80               -- demi-largeur du hub (AGRANDI : 62 -> 80)
+	local FZ, BZ = -4, 108      -- profondeur du hub (AGRANDI : 92 -> 108)
 	local CZ, D = (FZ + BZ) / 2, BZ - FZ
 	hp(Vector3.new(HW * 2 + 2, 2, D), CFrame.new(0, -3.4, CZ), FLB)
-	for ix = -7, 7 do
-		for iz = 0, 10 do
+	for ix = -9, 9 do
+		for iz = 0, 12 do
 			if (ix + iz) % 2 == 0 then
 				hp(Vector3.new(8.6, 0.3, 8.6), CFrame.new(ix * 8.7, -2.3, 4 + iz * 8.7), FLA)
 			end
@@ -1559,7 +1582,7 @@ local function buildHub()
 		hp(Vector3.new(14, 1.4, 9), off * CFrame.new(0, 4.2, 0), col, Enum.Material.Neon)
 		sign(off * CFrame.new(0, 8, 0), 14, 4, label, Color3.new(1, 1, 1), Color3.fromRGB(22, 26, 40))
 	end
-	kiosk(CFrame.new(36, 0, 64), "🛒 CHARIOTS", Color3.fromRGB(90, 200, 120))
+	kiosk(CFrame.new(36, 0, 64), "⬆ AMÉLIORER", Color3.fromRGB(90, 200, 120))
 	kiosk(CFrame.new(36, 0, 48), "✨ RENAISSANCE", Color3.fromRGB(190, 120, 230))
 
 	-- ---- BANCS ----
@@ -1597,26 +1620,25 @@ local function buildHub()
 	-- ---- POINT D'APPARITION (grand) ----
 	local sp = Instance.new("SpawnLocation")
 	sp.Size = Vector3.new(22, 1, 22); sp.Anchored = true; sp.Neutral = true
-	sp.CFrame = cf0 * CFrame.new(0, -2.4, 56)
+	sp.CFrame = cf0 * CFrame.new(0, -2.4, 26)   -- spawn rapproche des boutons d'apparition
 	sp.Color = ACC; sp.Material = Enum.Material.Neon; sp.Transparency = 0.4
 	sp.Parent = trackFolder
 
-	-- ---- PADS D'APPARITION DU CHARIOT (style ref : on monte sur un pad colore -> son chariot apparait) ----
-	sign(CFrame.new(0, 9, 6), 52, 5.5, "🚂 MONTE SUR UN PAD POUR FAIRE APPARAÎTRE TON CHARIOT", Color3.new(1, 1, 1), Color3.fromRGB(20, 24, 38))
-	-- arche doree au-dessus de la zone de spawn
-	hp(Vector3.new(2.4, 16, 2.4), CFrame.new(-28, 4.5, 19), GOLD, Enum.Material.Neon)
-	hp(Vector3.new(2.4, 16, 2.4), CFrame.new( 28, 4.5, 19), GOLD, Enum.Material.Neon)
-	hp(Vector3.new(60, 3, 2.4), CFrame.new(0, 12, 19), GOLD, Enum.Material.Neon)
-	-- 3 pads colores : monter dessus = faire apparaitre son chariot (+ s'y asseoir)
-	local spawnCols = { { -18, Color3.fromRGB(90, 220, 120) }, { 0, Color3.fromRGB(90, 200, 255) }, { 18, Color3.fromRGB(225, 120, 235) } }
+	-- ---- BOUTONS D'APPARITION : 1 PAR VOIE, PARFAITEMENT ALIGNES sur START_LANE_OFFSETS ----
+	-- monter sur un bouton colore -> ton chariot apparait sur SA voie (juste devant), qui rejoint
+	-- la voie principale. Comme on iter START_LANE_OFFSETS, bouton et voie sont au MEME X = 0 trou.
+	sign(CFrame.new(0, 11, 18), 60, 5, "🚂 MONTE SUR UN BOUTON → TON CHARIOT APPARAÎT SUR SA VOIE", Color3.new(1, 1, 1), Color3.fromRGB(20, 24, 38))
+	local btnCols = { Color3.fromRGB(90, 220, 120), Color3.fromRGB(90, 200, 255), Color3.fromRGB(235, 120, 235), Color3.fromRGB(255, 170, 60), Color3.fromRGB(255, 235, 90) }
 	local cdpad = {}
-	for _, e in ipairs(spawnCols) do
-		local px, col = e[1], e[2]
-		hp(Vector3.new(10.6, 1, 10.6), CFrame.new(px, -2.9, 16), Color3.fromRGB(16, 16, 22), Enum.Material.SmoothPlastic)
-		local pad = hp(Vector3.new(8.8, 1.4, 8.8), CFrame.new(px, -2.4, 16), col, Enum.Material.Neon)
-		local pl = Instance.new("PointLight"); pl.Range = 16; pl.Brightness = 2.6; pl.Color = col; pl.Parent = pad
-		hp(Vector3.new(1.2, 6, 1.2), CFrame.new(px, 1, 16), col, Enum.Material.Neon)        -- mat
-		hp(Vector3.new(4, 1.2, 1.2), CFrame.new(px, 3.4, 16), col, Enum.Material.Neon)      -- barre (fleche)
+	for i, L in ipairs(START_LANE_OFFSETS) do
+		local col = btnCols[((i - 1) % #btnCols) + 1]
+		local pz = 6
+		hp(Vector3.new(10, 1, 10), CFrame.new(L, -2.9, pz), Color3.fromRGB(16, 16, 22), Enum.Material.SmoothPlastic)   -- socle noir
+		local pad = hp(Vector3.new(8.4, 1.5, 8.4), CFrame.new(L, -2.25, pz), col, Enum.Material.Neon)                  -- le BOUTON (on monte dessus)
+		local pl = Instance.new("PointLight"); pl.Range = 18; pl.Brightness = 2.8; pl.Color = col; pl.Parent = pad
+		hp(Vector3.new(1.2, 7, 1.2), CFrame.new(L, 1.5, pz), col, Enum.Material.Neon)                                 -- mat lumineux
+		local cap = hp(Vector3.new(3.4, 3.4, 3.4), CFrame.new(L, 5.6, pz), col, Enum.Material.Neon)                   -- boule au sommet
+		cap.Shape = Enum.PartType.Ball
 		pad.Touched:Connect(function(hit)
 			local plr = Players:GetPlayerFromCharacter(hit.Parent)
 			if plr and not cdpad[plr] then cdpad[plr] = true; spawnPlayerCart(plr); task.delay(2.5, function() cdpad[plr] = nil end) end
@@ -1640,7 +1662,10 @@ local function makeFreshState()
 		score = 0, lap = 1, mult = 1, lastSeg = 0, combo = 0, comboT = 0, popups = {},
 		etape = 1, wins = 0, curStage = 1, stageStart = 0, respawnDist = 0,
 		maxSpeed = MAX_SPEED, vitLevel = 0, reb = 0, gainMul = 1,
-		cartTier = 1,   -- chariot possede (1..#CARTS) ; achete avec des pieces
+		cartTier = 1,   -- chariot = celui du biome (mis a jour a l'apparition / au changement de monde)
+		-- ameliorations de stats (par joueur, payees aux pieces) + stats effectives calculees
+		lvlSpeed = 0, lvlGrip = 0, lvlBrake = 0,
+		effGrip = CARTS[1].grip, effBrake = CARTS[1].brake,
 		-- XP et niveau de joueur (independant des pieces ; persiste entre les mondes)
 		xp = 0, xpLevel = 1,
 		-- paliers de boost de la course en cours (re-gagnes a chaque tour)
@@ -1651,7 +1676,11 @@ end
 local function recomputeMaxSpeed(pc)
 	if not pc then return end
 	local state = pc.state
-	state.maxSpeed = CARTS[state.cartTier].max + state.boostSpeed
+	local c = CARTS[state.cartTier]
+	-- stats EFFECTIVES = base du chariot du biome + ameliorations du joueur (+ boosts du parcours)
+	state.maxSpeed = c.max   + state.lvlSpeed * SPEED_STEP + state.boostSpeed
+	state.effGrip  = c.grip  + state.lvlGrip  * GRIP_STEP
+	state.effBrake = c.brake + state.lvlBrake * BRAKE_STEP
 end
 
 -- ===================== INTERFACE (HUD) =====================
@@ -1680,17 +1709,15 @@ local function refreshMenu(g)
 	local pc = pcFromGui(g); if not pc then return end
 	local state = pc.state
 	local menu = g:FindFirstChild("CartMenu"); if not menu then return end
-	local nextTier = math.min(state.cartTier + 1, #CARTS)
-	local view = math.clamp(state.menuView or nextTier, 1, #CARTS)
-	local c = CARTS[view]
+	local view = math.clamp(state.menuView or 1, 1, #STAT_INFO)   -- stat feuilletee (1..3)
+	local info = STAT_INFO[view]
+	local lvl  = statLevel(state, view)
 
-	-- apercu 3D : on restyle le clone du chariot au niveau feuillete (couleur + forme) PUIS on
-	-- RECADRE la camera du viewport sur la boite englobante -> tout le chariot tient dans la
-	-- vignette (du petit Bois au gros Legendaire), vu de 3/4 avant.
+	-- apercu 3D : le chariot DU BIOME que le joueur conduit (recadre sur sa boite englobante).
 	local pv = menu:FindFirstChild("PreviewCart", true)
 	if pv then
 		pv:PivotTo(CFrame.new(0, 0, 0))
-		styleModel(pv, view)
+		styleModel(pv, state.cartTier)
 		local vpf = menu:FindFirstChild("Preview", true)
 		local vcam = vpf and vpf.CurrentCamera
 		if vcam then
@@ -1702,57 +1729,47 @@ local function refreshMenu(g)
 	end
 
 	local title = menu:FindFirstChild("CartTitle", true)
-	if title then title.Text = string.upper(c.name) end
+	if title then title.Text = "⬆ " .. info.name end
 	local idx = menu:FindFirstChild("CartIdx", true)
-	if idx then idx.Text = "chariot " .. view .. " / " .. #CARTS end
+	if idx then idx.Text = "niveau " .. lvl .. " / " .. STAT_MAXLVL end
 
-	local maxSpeed = CARTS[#CARTS].max
-	local maxBrake = CARTS[#CARTS].brake
+	-- les 3 barres montrent les stats EFFECTIVES actuelles (vitesse / adherence / frein).
+	local maxSpeed = CARTS[#CARTS].max   + STAT_MAXLVL * SPEED_STEP
+	local maxBrake = CARTS[#CARTS].brake + STAT_MAXLVL * BRAKE_STEP
 	local function setBar(fillName, valName, frac, txt)
 		local fill = menu:FindFirstChild(fillName, true)
 		if fill then fill.Size = UDim2.new(math.clamp(frac, 0.05, 1), 0, 1, 0) end
 		local v = menu:FindFirstChild(valName, true)
 		if v then v.Text = txt end
 	end
-	setBar("SpeedFill", "SpeedVal", c.max / maxSpeed,   c.max .. " km/h")
-	setBar("GripFill",  "GripVal",  c.grip,             gripLabel(c.grip))
-	setBar("BrakeFill", "BrakeVal", c.brake / maxBrake, tostring(c.brake))
+	setBar("SpeedFill", "SpeedVal", state.maxSpeed / maxSpeed,   math.floor(state.maxSpeed) .. " km/h")
+	setBar("GripFill",  "GripVal",  state.effGrip,               gripLabel(state.effGrip))
+	setBar("BrakeFill", "BrakeVal", state.effBrake / maxBrake,   tostring(math.floor(state.effBrake)))
 
 	local line = menu:FindFirstChild("StateLine", true)
 	local buy  = menu:FindFirstChild("MenuBuy")
 	local GREEN = Color3.fromRGB(40, 170, 75)
 	local GREY  = Color3.fromRGB(70, 74, 88)
-	if view <= state.cartTier then
-		-- chariot DEJA possede (ou de depart) : le bouton = PRENDRE/JOUER (ferme le menu)
-		if line then
-			if c.price == 0 then line.Text = "🎁 chariot de départ — GRATUIT"; line.TextColor3 = Color3.fromRGB(130, 230, 150)
-			elseif view == state.cartTier then line.Text = "🚂 ton chariot actuel"; line.TextColor3 = Color3.fromRGB(255, 225, 90)
-			else line.Text = "✅ déjà possédé"; line.TextColor3 = Color3.fromRGB(120, 210, 120) end
-		end
+	if lvl >= STAT_MAXLVL then
+		if line then line.Text = "✅ " .. info.name .. " au MAXIMUM"; line.TextColor3 = Color3.fromRGB(130, 230, 150) end
 		if buy then
-			buy.Text = (c.price == 0) and "🎁 PRENDRE — GRATUIT" or "▶ JOUER"
-			buy.BackgroundColor3 = GREEN; buy.AutoButtonColor = true; buy.Active = true
-			buy:SetAttribute("Action", "close")
+			buy.Text = "🏁 NIVEAU MAX"
+			buy.BackgroundColor3 = GREY; buy.AutoButtonColor = false; buy.Active = false
+			buy:SetAttribute("Action", "none")
 		end
-	elseif view == state.cartTier + 1 then
-		if line then line.Text = "Prix : " .. c.price .. " pièces"; line.TextColor3 = Color3.fromRGB(120, 220, 255) end
+	else
+		local cost = statCost(view, lvl)
+		if line then line.Text = "niveau " .. lvl .. " → " .. (lvl + 1) .. "   (" .. cost .. " pièces)"; line.TextColor3 = Color3.fromRGB(120, 220, 255) end
 		if buy then
-			if state.score >= c.price then
-				buy.Text = "⬆ ACHETER — " .. c.price .. " pièces"
+			if state.score >= cost then
+				buy.Text = "⬆ AMÉLIORER — " .. cost .. " pièces"
 				buy.BackgroundColor3 = GREEN; buy.AutoButtonColor = true; buy.Active = true
 				buy:SetAttribute("Action", "buy")
 			else
-				buy.Text = "manque " .. (c.price - math.floor(state.score)) .. " pièces"
+				buy.Text = "manque " .. (cost - math.floor(state.score)) .. " pièces"
 				buy.BackgroundColor3 = Color3.fromRGB(190, 120, 40); buy.AutoButtonColor = false; buy.Active = false
 				buy:SetAttribute("Action", "none")
 			end
-		end
-	else
-		if line then line.Text = "🔒 verrouillé — " .. c.price .. " pièces"; line.TextColor3 = Color3.fromRGB(160, 160, 172) end
-		if buy then
-			buy.Text = "🔒 achète les précédents d'abord"
-			buy.BackgroundColor3 = GREY; buy.AutoButtonColor = false; buy.Active = false
-			buy:SetAttribute("Action", "none")
 		end
 	end
 end
@@ -1865,7 +1882,7 @@ local function makeGui(player)
 	cartName.Size = UDim2.new(0, 210, 0, 26); cartName.BackgroundTransparency = 0.4
 	cartName.BackgroundColor3 = Color3.fromRGB(18, 20, 28); cartName.BorderSizePixel = 0
 	cartName.TextColor3 = Color3.fromRGB(120, 220, 255); cartName.Font = Enum.Font.GothamBold
-	cartName.TextScaled = true; cartName.Text = "🛒 Chariot Bois"; cartName.Visible = false
+	cartName.TextScaled = true; cartName.Text = "🛒 Chariot Enfer"; cartName.Visible = false
 	cartName.Parent = gui
 	-- ===== BOUTON "AMELIORER" a l'ecran (a droite) : OUVRE le menu CHARIOTS =====
 	local upBtn = Instance.new("TextButton")
@@ -1953,7 +1970,7 @@ local function makeGui(player)
 	mtitle.Size = UDim2.new(1, -70, 0, 40); mtitle.Position = UDim2.new(0, 16, 0, 12)
 	mtitle.BackgroundTransparency = 1; mtitle.Font = Enum.Font.GothamBlack; mtitle.TextScaled = true
 	mtitle.TextXAlignment = Enum.TextXAlignment.Left
-	mtitle.TextColor3 = ACCENT; mtitle.Text = "🛒 CHARIOTS"; mtitle.Parent = menu
+	mtitle.TextColor3 = ACCENT; mtitle.Text = "⬆ AMÉLIORER TON CHARIOT"; mtitle.Parent = menu
 	local mclose = Instance.new("TextButton")
 	mclose.Name = "MenuClose"; mclose.AnchorPoint = Vector2.new(1, 0); mclose.Position = UDim2.new(1, -12, 0, 12)
 	mclose.Size = UDim2.new(0, 40, 0, 40); mclose.BackgroundColor3 = Color3.fromRGB(210, 70, 70); mclose.BorderSizePixel = 0
@@ -2093,10 +2110,12 @@ function makePlayerCart(player)
 	}
 	makeCartFX(pc)                 -- son / etincelles / halo legendaire (par chariot)
 	pc.state = makeFreshState()
-	-- MODE TEST : on demarre riche pour essayer tous les chariots sans farmer (par joueur).
+	pc.state.cartTier = biomeCartTier()   -- on conduit le chariot DU BIOME courant
+	-- MODE TEST : on demarre riche pour tester les ameliorations sans farmer (par joueur).
 	if DEBUG then pc.state.score = 1000000 end
 	playerCarts[player] = pc
-	applyCartStyle(pc, 1)          -- look + son du chariot de depart
+	applyCartStyle(pc, pc.state.cartTier)  -- look + son du chariot du biome
+	recomputeMaxSpeed(pc)                  -- calcule les stats effectives
 	connectSeat(pc)               -- HUD du proprietaire visible quand il conduit son chariot
 	return pc
 end
@@ -2316,7 +2335,7 @@ local function updateInfo(player, seg, speed)
 		local frac = math.clamp(math.abs(speed) / math.max(state.maxSpeed, 1), 0, 1)
 		g.Gauge.Needle.Rotation = -120 + 240 * frac
 		g.Gauge.Kmh.Text = tostring(math.floor(math.abs(speed) * KMH))
-		g.CartName.Text = "🛒 " .. CARTS[state.cartTier].name .. "  (" .. CARTS[state.cartTier].max .. " km/h)"
+		g.CartName.Text = "🛒 " .. CARTS[state.cartTier].name .. "  (" .. math.floor(state.maxSpeed) .. " km/h)"
 	end
 end
 
@@ -2565,24 +2584,28 @@ end
 -- buildEconomy : (re)pose les pads Boutique/Renaissance dans le hub. Rejouable.
 local function buildEconomy()
 	local cf0 = renderAtDistance(0)
-	local function buyCart(player)
+	-- buyStat : ameliore d'UN niveau la STAT selectionnee (state.menuView) DU joueur qui clique.
+	local function buyStat(player)
 		local pc = playerCarts[player]; if not pc then return end
 		local state = pc.state
-		if state.cartTier >= #CARTS then
-			if player then flashCenter(player, "🏁 Tu as deja le MEILLEUR chariot !", Color3.fromRGB(255, 215, 90), 2.5) end
+		local i = math.clamp(state.menuView or 1, 1, #STAT_INFO)
+		local lvl = statLevel(state, i)
+		if lvl >= STAT_MAXLVL then
+			if player then flashCenter(player, "🏁 " .. STAT_INFO[i].name .. " est deja au MAX !", Color3.fromRGB(255, 215, 90), 2.5) end
 			return
 		end
-		local nxt = CARTS[state.cartTier + 1]
-		if state.score >= nxt.price then
-			state.score = state.score - nxt.price
-			state.cartTier = state.cartTier + 1
+		local cost = statCost(i, lvl)
+		if state.score >= cost then
+			state.score = state.score - cost
+			if i == 1 then state.lvlSpeed = state.lvlSpeed + 1
+			elseif i == 2 then state.lvlGrip = state.lvlGrip + 1
+			else state.lvlBrake = state.lvlBrake + 1 end
 			recomputeMaxSpeed(pc)
-			applyCartStyle(pc, state.cartTier)   -- nouveau look + nouveau son
 			setWallet(player); updateLeaderstats(player)
-			if player then flashCenter(player, "🛒 NOUVEAU CHARIOT : " .. nxt.name .. " !  (" .. nxt.max .. " km/h)", Color3.fromRGB(120, 255, 140), 3) end
+			if player then flashCenter(player, "⬆ " .. STAT_INFO[i].name .. " niveau " .. (lvl + 1) .. " !", Color3.fromRGB(120, 255, 140), 2.2) end
 		elseif player then
-			local manque = nxt.price - math.floor(state.score)
-			flashCenter(player, "🔒 " .. nxt.name .. " = " .. nxt.price .. " pieces  (encore " .. manque .. ")", Color3.fromRGB(255, 150, 120), 2.8)
+			local manque = cost - math.floor(state.score)
+			flashCenter(player, "🔒 " .. STAT_INFO[i].name .. " = " .. cost .. " pieces  (encore " .. manque .. ")", Color3.fromRGB(255, 150, 120), 2.8)
 		end
 	end
 	local function doRebirth(player)
@@ -2625,12 +2648,11 @@ local function buildEconomy()
 	ulbl.Font = Enum.Font.GothamBlack; ulbl.TextColor3 = Color3.new(1, 1, 1); ulbl.TextStrokeTransparency = 0.4
 	-- panneau GENERIQUE : avec un chariot PAR JOUEUR, on ne peut plus afficher UN seul prix.
 	-- Le panneau dit juste "AMELIORER" ; le vrai parcours d'achat (par joueur) est le menu a l'ecran.
-	ulbl.Text = "⬆ AMELIORER\nchariot suivant"; ulbl.Parent = usg
-	-- doUpgrade(plr) : achete le PROCHAIN chariot DU joueur qui clique, puis rafraichit SON menu.
+	ulbl.Text = "⬆ AMELIORER\ntes stats"; ulbl.Parent = usg
+	-- doUpgrade(plr) : ameliore la STAT selectionnee DU joueur qui clique, puis rafraichit SON menu.
 	local function doUpgrade(plr)
 		local pc = playerCarts[plr]; if not pc then return end
-		buyCart(plr)
-		pc.state.menuView = nil   -- sa carte revient a son nouveau "prochain chariot"
+		buyStat(plr)
 		local gg = guis[plr]; if gg then refreshMenu(gg) end
 	end
 	upgradeFn = doUpgrade   -- le bouton ecran (RemoteEvent) appellera ca
@@ -2655,18 +2677,16 @@ askUpgrade.OnServerEvent:Connect(function(plr)
 	if upgradeFn then upgradeFn(plr) end
 end)
 
--- les fleches ◀ ▶ du menu CHARIOTS : on change le chariot AFFICHE (0 = revenir au prochain
--- chariot, ce que le client envoie a l'ouverture du menu). C'est de l'AFFICHAGE seulement :
--- l'achat (doUpgrade) reste toujours sur le PROCHAIN chariot.
+-- les fleches ◀ ▶ du menu : changent la STAT selectionnee (1=Vitesse, 2=Adherence, 3=Frein).
+-- 0 = garder la stat courante (envoye par le client a l'ouverture du menu).
 askBrowse.OnServerEvent:Connect(function(plr, dir)
 	if typeof(dir) ~= "number" then return end
 	local pc = playerCarts[plr]; if not pc then return end
 	local state = pc.state
-	local nextTier = math.min(state.cartTier + 1, #CARTS)
 	if dir == 0 then
-		state.menuView = nextTier
+		state.menuView = state.menuView or 1
 	else
-		state.menuView = math.clamp((state.menuView or nextTier) + (dir > 0 and 1 or -1), 1, #CARTS)
+		state.menuView = math.clamp((state.menuView or 1) + (dir > 0 and 1 or -1), 1, #STAT_INFO)
 	end
 	local gg = guis[plr]; if gg then refreshMenu(gg) end
 end)
@@ -2718,13 +2738,15 @@ local function advanceWorld(triggerPlayer)
 	end
 	buildWorld(nextW)   -- on regenere TOUT le decor UNE seule fois (genTrack met a jour currentWorldIndex)
 	-- replace CHAQUE chariot au depart + remet SA course a zero, puis rassoit le joueur dans le nouveau hub.
-	local hubCF = (renderAtDistance(0)) * CFrame.new(0, 5, 56)
+	local hubCF = (renderAtDistance(0)) * CFrame.new(0, 5, 26)   -- aligne sur le spawn rapproche
 	for _, pc in pairs(playerCarts) do
 		local state = pc.state
 		state.distance = 0; state.speed = 0; state.curStage = 1; state.stageStart = 0; state.respawnDist = 0; state.lastSeg = 0
 		state.boostLevel = 0; state.boostSpeed = 0; state.boostGrip = 0; state.maxReached = 0
 		state.grip = 0; state.lean = 0; state.lastLean = nil
 		state.derailing = false; state.airborne = false
+		local bt = biomeCartTier()             -- chariot = celui du NOUVEAU biome
+		if state.cartTier ~= bt then state.cartTier = bt; applyCartStyle(pc, bt) end
 		recomputeMaxSpeed(pc)
 		if pc.spawned and pc.cart then pc.cart:PivotTo((renderAtDistance(0)) * CFrame.new(pc.laneX or 0, 0, 0)) end
 		local player = pc.player
@@ -2806,7 +2828,7 @@ local function stepCart(pc, dt)
 	if throttle > 0 then
 		state.speed = state.speed + ACCEL * dt
 	elseif throttle < 0 then
-		state.speed = state.speed - CARTS[state.cartTier].brake * dt   -- freinage = celui du chariot
+		state.speed = state.speed - state.effBrake * dt   -- freinage = celui du chariot
 	else
 		if state.speed > 0 then
 			state.speed = math.max(0, state.speed - FRICTION * dt)
@@ -2885,7 +2907,7 @@ local function stepCart(pc, dt)
 		-- + boosts de la course). En descente, la gravite reste (l'elan est un atout).
 		local grav = WORLD_GRAVITY
 		if cf.LookVector.Y > 0 then
-			local power = math.min(0.85, BASE_CLIMB + (CARTS[state.cartTier].grip + state.boostGrip) * CLIMB_ASSIST)
+			local power = math.min(0.85, BASE_CLIMB + (state.effGrip + state.boostGrip) * CLIMB_ASSIST)
 			grav = grav * (1 - power)
 		end
 		local ns = state.speed - grav * cf.LookVector.Y * dt
@@ -2909,7 +2931,7 @@ local function stepCart(pc, dt)
 		local launchE = state.speed * state.speed * downCurve
 		-- seuil d'envol RELEVE par l'adherence (chariot + boosts) : un meilleur chariot "colle"
 		-- mieux a la voie en descente -> il s'envole / crashe moins involontairement sur les bosses.
-		local launchThreshold = LAUNCH_FORCE * (1 + (CARTS[state.cartTier].grip + state.boostGrip) * 1.4)
+		local launchThreshold = LAUNCH_FORCE * (1 + (state.effGrip + state.boostGrip) * 1.4)
 		if downCurve > 0 and launchE > launchThreshold then
 			state.airborne = true
 			state.airTime = 0
@@ -2962,7 +2984,7 @@ local function stepCart(pc, dt)
 	-- perte d'adherence progressive : en virage trop rapide on accumule du
 	-- "danger" (state.grip 0->1). On RECUPERE en ralentissant -> on peut se rattraper.
 	-- l'adherence gagnee en avancant releve la vitesse "sure" en virage -> on deraille moins
-	local gripMul = 0.8 + state.boostGrip + CARTS[state.cartTier].grip   -- 0.8 = chariot de base moins stable
+	local gripMul = 0.62 + state.boostGrip + state.effGrip   -- 0.62 = chariot de base TWITCHY (deraille vite) ; monte l'ADHERENCE pour stabiliser
 	-- MONDES + DURS : plus le monde est avance, plus les virages sont SERRES (vitesse sure
 	-- plus basse) -> un chariot faible deraille direct, il FAUT un meilleur chariot.
 	local worldSafe = math.max(0.45, 1 - (currentWorldIndex - 1) * 0.12)
