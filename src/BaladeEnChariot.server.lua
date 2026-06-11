@@ -101,6 +101,11 @@ askUpgrade.Parent = ReplicatedStorage
 local askBrowse = Instance.new("RemoteEvent")
 askBrowse.Name = "AskBrowse"
 askBrowse.Parent = ReplicatedStorage
+-- menu MONDES (admin) : le client envoie le numero du monde choisi -> teleportation du serveur.
+askWorldRE = Instance.new("RemoteEvent")   -- GLOBAL (cf. limite 200 locals : on etait PILE a 200 !)
+askWorldRE.Name = "AskWorld"
+askWorldRE.Parent = ReplicatedStorage
+ADMINS = { Alexskoow = true }   -- GLOBAL (cf. limite 200 locals). Ajoute ici le pseudo de ton pote !
 local upgradeFn   -- (re)defini par buildEconomy
 
 -- ===== AMELIORATION DES STATS (par joueur, payee avec les pieces) =====
@@ -1263,8 +1268,11 @@ local function caveMushroom(gp)
 end
 local function caveGoldRock(gp)
 	local r = part(Vector3.new(7, 5.5, 6), CFrame.new(gp + Vector3.new(0, 2.6, 0)) * CFrame.Angles(rng:NextNumber(0, 0.4), rng:NextNumber(0, 6.2), rng:NextNumber(0, 0.4)), Color3.fromRGB(74, 70, 96), Enum.Material.Slate)
-	for _ = 1, 3 do
-		part(Vector3.new(1.1, 1.1, 1.1), r.CFrame * CFrame.new(rng:NextNumber(-2.4, 2.4), rng:NextNumber(0.5, 2.4), rng:NextNumber(-2.2, 2.2)), Color3.fromRGB(255, 200, 60), Enum.Material.Metal)
+	for _ = 1, rng:NextInteger(4, 6) do
+		local sz = rng:NextNumber(0.7, 1.6)
+		part(Vector3.new(sz, sz * rng:NextNumber(0.7, 1.1), sz * rng:NextNumber(0.7, 1.1)),
+			r.CFrame * CFrame.new(rng:NextNumber(-2.6, 2.6), rng:NextNumber(0.4, 2.6), rng:NextNumber(-2.4, 2.4)) * CFrame.Angles(rng:NextNumber(0, 6.2), rng:NextNumber(0, 6.2), rng:NextNumber(0, 6.2)),
+			Color3.fromRGB(255, 200, 60), Enum.Material.Metal)
 	end
 end
 
@@ -1405,13 +1413,8 @@ local function buildLandmarks()
 	for i = 12, NSEG - 5, 24 do   -- ~tous les 190 studs, uniquement sur du PLAT DROIT
 		local cf = renderNodes[i]
 		if cf.UpVector.Y > 0.9 and segMeta[i].kind == "straight" then
-			if zi == 1 then
-				for _, sx in ipairs({ -1, 1 }) do
-					part(Vector3.new(4.5, 26, 5), cf * CFrame.new(sx * (TRACK_WIDTH / 2 + 5), 11, 0), Color3.fromRGB(34, 26, 26), Enum.Material.Basalt)
-				end
-				part(Vector3.new(TRACK_WIDTH + 16, 5, 6), cf * CFrame.new(0, 24, 0), Color3.fromRGB(40, 30, 30), Enum.Material.Basalt)
-				part(Vector3.new(TRACK_WIDTH + 12, 0.7, 1.2), cf * CFrame.new(0, 21.3, 0), Color3.fromRGB(255, 80, 20), Enum.Material.Neon)
-			end
+			-- (arches-portes de l'Enfer SUPPRIMEES : plus aucune "porte" au-dessus de la voie,
+			--  dans AUCUN monde — demande du chef. Seul le portail d'arrivee est conserve.)
 		end
 	end
 end
@@ -1419,7 +1422,7 @@ end
 -- buildDecor : vide l'ancien decor, repose les props + les landmarks + le grand repere du monde.
 -- buildGrotteDecor : decor CAVERNE (zone 5) — plafond rocheux au-dessus de la voie, stalagmites,
 -- cristaux lumineux, champignons geants, arches a traverser. Tout en pieces, dans decorFolder.
-local function buildGrotteDecor()
+function buildGrotteDecor()   -- GLOBAL (cf. limite 200 locals) : libere un registre de plus
 	local function gp(size, cframe, color, mat)
 		local p = makePart(size, cframe, color, mat, decorFolder)
 		p.CanCollide = false; p.CastShadow = false
@@ -1428,6 +1431,8 @@ local function buildGrotteDecor()
 	local ROCK1 = Color3.fromRGB(66, 62, 90)
 	local ROCK2 = Color3.fromRGB(84, 78, 112)
 	local CRYS  = { Color3.fromRGB(110, 235, 255), Color3.fromRGB(178, 120, 255), Color3.fromRGB(255, 120, 210) }
+	-- compteurs de DIAGNOSTIC : imprimes en fin de construction (visibles dans la Sortie/les logs)
+	local nGroundOk, nGroundKo, nCeilOk, nCeilKo, nWorm, nWeb, nPiece = 0, 0, 0, 0, 0, 0, 0
 	local WOODM = Color3.fromRGB(104, 74, 46)
 	-- garde ANTI-CLIPPING : le trace se recroise -> on ne pose JAMAIS de roche a moins de
 	-- `margin` studs d'un AUTRE troncon de voie (sinon les murs traversent les rails, immonde).
@@ -1442,20 +1447,103 @@ local function buildGrotteDecor()
 		end
 		return true
 	end
+	local caveFloorCeil   -- DECLARE ICI, defini plus bas (piege "ordre des fonctions" : groundAt
+	-- et ceilingAt le capturent comme upvalue ; sans cette ligne ils appelleraient... nil)
+	-- pose AU SOL REEL : raycast vers le bas -> la deco repose sur le fond du tunnel, plus
+	-- jamais en suspension a cote d'une voie en hauteur. nil = pas de sol correct -> on saute.
+	local rcp = RaycastParams.new()
+	rcp.FilterType = Enum.RaycastFilterType.Exclude
+	rcp.FilterDescendantsInstances = { decorFolder, trackFolder }
+	local function groundAt(cf, off, dz, maxDrop, dd)
+		maxDrop = maxDrop or 50   -- en salle (sol profond), on passe une limite plus grande
+		local origin = (cf * CFrame.new(off, 6, dz or 0)).Position
+		local hit = Workspace:Raycast(origin, Vector3.new(0, -(maxDrop + 20), 0), rcp)
+		if hit and (origin.Y - hit.Position.Y) < maxDrop then
+			nGroundOk = nGroundOk + 1
+			return CFrame.new(hit.Position)
+		end
+		nGroundKo = nGroundKo + 1
+		if dd then   -- secours analytique : on pose au sol CALCULE du tunnel
+			local fY = caveFloorCeil(dd, off)
+			return CFrame.new(origin.X, fY, origin.Z)
+		end
+		return nil
+	end
+	-- plafond REEL : raycast vers le HAUT (pour accrocher les vers luisants et stalactites a la voute)
+	local function ceilingAt(cf, off, dz, maxUp, dd)
+		maxUp = maxUp or 60   -- dans les domes des salles, on vise plus haut
+		local origin = (cf * CFrame.new(off, 4, dz or 0)).Position
+		local hit = Workspace:Raycast(origin, Vector3.new(0, maxUp + 15, 0), rcp)
+		if hit and (hit.Position.Y - origin.Y) < maxUp then
+			nCeilOk = nCeilOk + 1
+			return CFrame.new(hit.Position)
+		end
+		nCeilKo = nCeilKo + 1
+		if dd then   -- secours analytique : on accroche au plafond CALCULE du tunnel
+			local _, cY = caveFloorCeil(dd, off)
+			return CFrame.new(origin.X, cY, origin.Z)
+		end
+		return nil
+	end
+	-- LES SALLES-CATHEDRALES : grandes cavernes reparties le long du parcours, chacune avec sa
+	-- TEINTE et sa PIECE MAITRESSE (1 = cristal geant, 2 = lac luminescent, 3 = champignons geants)
+	local TINTS = {
+		{ Color3.fromRGB(110, 235, 255), Color3.fromRGB(120, 170, 255) },   -- cyan / bleu
+		{ Color3.fromRGB(178, 120, 255), Color3.fromRGB(255, 120, 210) },   -- violet / rose
+		{ Color3.fromRGB(255, 200, 90),  Color3.fromRGB(255, 150, 60) },    -- ambre / or
+		{ Color3.fromRGB(120, 255, 170), Color3.fromRGB(110, 235, 255) },   -- vert / cyan
+	}
+	local salles = {}
+	do
+		local sd = 480 + rng:NextNumber(0, 200)
+		local kind = rng:NextInteger(1, 3)
+		while sd < TOTAL_DIST - 250 do
+			table.insert(salles, { d = sd, r = rng:NextNumber(42, 54), tint = TINTS[rng:NextInteger(1, #TINTS)], kind = kind })
+			kind = (kind % 3) + 1   -- cristal -> lac -> champignons -> ... (jamais 2 fois pareil)
+			sd = sd + rng:NextNumber(620, 900)
+		end
+	end
+	local function salleBonus(dd)   -- "rayon en plus" si dd est dans une salle (0 sinon, fondu doux)
+		for _, s in ipairs(salles) do
+			local dist = math.abs(dd - s.d)
+			if dist < s.r * 1.5 then
+				return math.max(0, s.r * (1 - dist / (s.r * 1.5)))
+			end
+		end
+		return 0
+	end
+	-- geometrie ANALYTIQUE du tunnel : on sait ou sont sol et plafond puisque c'est NOUS qui
+	-- creusons (centre cy, rayon cr) -> secours fiable si un raycast echoue
+	caveFloorCeil = function(dd, off)
+		local p = renderAtDistance(math.max(dd, 0)).Position
+		local sb = salleBonus(dd)
+		local cr = math.max(25, sb)
+		local cy = math.max(p.Y + 9 + sb * 0.25, cr + 1)
+		local half = math.sqrt(math.max(cr * cr - off * off, 16))
+		return cy - half + 1.2, cy + half - 1.2
+	end
 	-- VRAIE GROTTE ARRONDIE (en TERRAIN, technique du volcan) : on remplit un gros boudin de
 	-- roche LISSE le long de TOUTE la voie, puis on CREUSE l'interieur -> tunnel organique,
 	-- arrondi, hermetique. La ou le trace se recroise, les galeries fusionnent naturellement.
-	local d = 0
+	-- (le boudin demarre a 34 studs du depart avec un rayon reduit : sinon la premiere grosse
+	--  boule de roche deborde sur la plaque et BOUCHE la bouche de la grotte)
+	local d = 34
 	while d < TOTAL_DIST + 30 do
 		local p = renderAtDistance(math.min(d, TOTAL_DIST)).Position
-		Terrain:FillBall(p + Vector3.new(0, 8, 0), 44, Enum.Material.Slate)
+		local r = (d < 80) and 36 or 44
+		local sb = salleBonus(d)
+		if sb > 0 then r = math.max(r, sb + 18) end   -- coque plus large autour des salles
+		Terrain:FillBall(p + Vector3.new(0, 8 + sb * 0.3, 0), r, Enum.Material.Slate)
 		d = d + 16
 	end
 	d = 0
 	while d < TOTAL_DIST + 30 do
 		local p = renderAtDistance(math.min(d, TOTAL_DIST)).Position
-		local cy = math.max(p.Y + 9, 26)   -- on ne creuse jamais sous y=1 (le sol reste plein)
-		Terrain:FillBall(Vector3.new(p.X, cy, p.Z), 25, Enum.Material.Air)
+		local sb = salleBonus(d)
+		local cr = math.max(25, sb)
+		-- centre du creusement : monte en DOME dans les salles ; et jamais de trou sous y=1
+		local cy = math.max(p.Y + 9 + sb * 0.25, cr + 1)
+		Terrain:FillBall(Vector3.new(p.X, cy, p.Z), cr, Enum.Material.Air)
 		d = d + 12
 	end
 	-- la sortie des gares est LARGE (5 voies ecartees) : on elargit le creusement au tout debut
@@ -1466,6 +1554,16 @@ local function buildGrotteDecor()
 			Terrain:FillBall((cf * CFrame.new(ox, 10, 0)).Position, 22, Enum.Material.Air)
 		end
 		d = d + 14
+	end
+	-- PORCHE : on degage COMPLETEMENT l'entree de la grotte, sur toute la largeur des 5 voies
+	d = -6
+	while d < 64 do
+		local cf = renderAtDistance(d)
+		for _, ox in ipairs({ -28, -14, 0, 14, 28 }) do
+			local p = (cf * CFrame.new(ox, 0, 0)).Position
+			Terrain:FillBall(Vector3.new(p.X, math.max(p.Y + 8, 24), p.Z), 20, Enum.Material.Air)
+		end
+		d = d + 12
 	end
 	-- LANTERNES DE MINE sur poteau, en alternance gauche/droite (lumiere chaude tout du long)
 	d = 70
@@ -1481,19 +1579,7 @@ local function buildGrotteDecor()
 		end
 		d = d + rng:NextNumber(80, 110)
 	end
-	-- SOUTENEMENTS DE MINE : portiques en bois que la voie traverse + lanterne qui pend
-	d = 90
-	while d < TOTAL_DIST - 60 do
-		local cf = renderAtDistance(d)
-		if math.abs(cf.UpVector.Y) > 0.95 and awayFromTrack((cf * CFrame.new(0, 16, 0)).Position, d, 18) then
-			gp(Vector3.new(2.2, 22, 2.2), cf * CFrame.new(-(TRACK_WIDTH / 2 + 4), 8, 0), WOODM, Enum.Material.Wood)
-			gp(Vector3.new(2.2, 22, 2.2), cf * CFrame.new(TRACK_WIDTH / 2 + 4, 8, 0), WOODM, Enum.Material.Wood)
-			gp(Vector3.new(TRACK_WIDTH + 12, 2.4, 2.6), cf * CFrame.new(0, 19.5, 0), WOODM, Enum.Material.Wood)
-			local lant = gp(Vector3.new(1.1, 1.4, 1.1), cf * CFrame.new(rng:NextNumber(-3, 3), 17.8, 0), Color3.fromRGB(255, 214, 120), Enum.Material.Neon)
-			local ll = Instance.new("PointLight"); ll.Range = 24; ll.Brightness = 1.1; ll.Color = Color3.fromRGB(255, 200, 110); ll.Parent = lant
-		end
-		d = d + rng:NextNumber(150, 210)
-	end
+	-- (portiques de mine en bois SUPPRIMES a la demande du chef : les lanternes sur poteau suffisent)
 	-- DECOR DISPERSE : stalagmites / cristaux / champignons / VEINES D'OR dans les parois
 	-- (chaque pose verifie awayFromTrack -> plus rien ne traverse un autre troncon de voie)
 	d = 60
@@ -1502,50 +1588,241 @@ local function buildGrotteDecor()
 		local side = (rng:NextNumber() < 0.5) and 1 or -1
 		local roll = rng:NextNumber()
 		if roll < 0.3 then
+			-- STALAGMITE v2 : cone de 4 troncons CYLINDRIQUES decroissants, legerement desaxes
 			local off = side * rng:NextNumber(12, 22)
-			local h1 = rng:NextNumber(6, 12)
-			local base = cf * CFrame.new(off, -RIDE_HEIGHT, 0)
-			if awayFromTrack(base.Position, d, 14) then
-				gp(Vector3.new(6.5, h1, 6.5), base * CFrame.new(0, h1 / 2, 0), ROCK1, Enum.Material.Slate)
-				gp(Vector3.new(4, h1 * 0.8, 4), base * CFrame.new(rng:NextNumber(-0.5, 0.5), h1 + h1 * 0.4 - 0.5, 0), ROCK2, Enum.Material.Slate)
-				gp(Vector3.new(2, h1 * 0.55, 2), base * CFrame.new(0, h1 * 1.75 - 0.9, 0), ROCK2, Enum.Material.Slate)
+			local base = groundAt(cf, off, nil, nil, d)
+			if base and awayFromTrack(base.Position, d, 14) then
+				local h = rng:NextNumber(8, 16)
+				local w = h * rng:NextNumber(0.42, 0.55)
+				local ybase = 0
+				for seg = 1, 4 do
+					local fr = (seg - 1) / 4
+					local sh = h * 0.3 * rng:NextNumber(0.85, 1.15)
+					local sw = w * (1 - fr * 0.72)
+					local cyl = gp(Vector3.new(sh, sw, sw),
+						base * CFrame.new(rng:NextNumber(-0.5, 0.5) * fr * 2, ybase + sh / 2, rng:NextNumber(-0.5, 0.5) * fr * 2) * CFrame.Angles(0, 0, math.rad(90)),
+						(seg % 2 == 0) and ROCK2 or ROCK1, Enum.Material.Slate)
+					cyl.Shape = Enum.PartType.Cylinder
+					ybase = ybase + sh * 0.82
+				end
 			end
 		elseif roll < 0.58 then
 			local cc = CRYS[rng:NextInteger(1, #CRYS)]
 			local off = side * rng:NextNumber(12, 22)
-			local base = cf * CFrame.new(off, -RIDE_HEIGHT + 0.5, 0)
-			if awayFromTrack(base.Position, d, 12) then
+			local base = groundAt(cf, off, nil, nil, d)
+			if base then base = base * CFrame.new(0, 0.5, 0) end
+			if base and awayFromTrack(base.Position, d, 12) then
 				local main = gp(Vector3.new(2.6, rng:NextNumber(6, 11), 2.6), base * CFrame.Angles(rng:NextNumber(-0.35, 0.35), rng:NextNumber(0, 6.2), rng:NextNumber(-0.35, 0.35)), cc, Enum.Material.Neon)
 				gp(Vector3.new(1.6, 5, 1.6), base * CFrame.new(2, -1, 0.6) * CFrame.Angles(0.4, 1, 0.2), cc, Enum.Material.Neon)
 				local cl = Instance.new("PointLight"); cl.Range = 22; cl.Brightness = 1.3; cl.Color = cc; cl.Parent = main
 			end
 		elseif roll < 0.74 then
-			-- VEINE D'OR incrustee dans la paroi (pepites Metal dorees)
-			local wx = side * rng:NextNumber(21, 25)   -- incrustees dans la paroi ARRONDIE du tunnel
-			local wy = rng:NextNumber(2, 16)
-			if awayFromTrack((cf * CFrame.new(wx, wy, 0)).Position, d, 14) then
-				for _ = 1, rng:NextInteger(3, 5) do
-					gp(Vector3.new(1.3, 1.3, 1.3), cf * CFrame.new(wx + rng:NextNumber(-1.5, 1.5), wy + rng:NextNumber(-3, 3), rng:NextNumber(-6, 6)) * CFrame.Angles(rng:NextNumber(0, 1), rng:NextNumber(0, 1), 0), Color3.fromRGB(255, 200, 60), Enum.Material.Metal)
+			-- FILON D'OR : rognon de roche EN SAILLIE de la paroi (cote voie), pepites groupees
+			-- sur sa face visible + lueur doree portee par une pepite Neon -> jamais enterre
+			local wx = side * rng:NextNumber(21, 23)
+			local wy = rng:NextNumber(3, 12)
+			if awayFromTrack((cf * CFrame.new(wx, wy, 0)).Position, d, 13) then
+				local rockCF = cf * CFrame.new(wx, wy, rng:NextNumber(-4, 4)) * CFrame.Angles(rng:NextNumber(-0.3, 0.3), rng:NextNumber(-0.3, 0.3), rng:NextNumber(-0.3, 0.3))
+				gp(Vector3.new(rng:NextNumber(3.6, 4.6), rng:NextNumber(3, 4), rng:NextNumber(3.4, 4.4)), rockCF, ROCK2, Enum.Material.Slate)
+				-- pepites OR SIMPLE : metal dore mat, pas de Neon, pas de lumiere (demande du chef)
+				for _ = 1, rng:NextInteger(4, 6) do
+					local sz = rng:NextNumber(0.7, 1.5)
+					gp(Vector3.new(sz, sz * rng:NextNumber(0.7, 1.1), sz * rng:NextNumber(0.7, 1.1)),
+						rockCF * CFrame.new(-side * rng:NextNumber(1.5, 2.4), rng:NextNumber(-1.3, 1.3), rng:NextNumber(-1.6, 1.6)) * CFrame.Angles(rng:NextNumber(0, 6.2), rng:NextNumber(0, 6.2), rng:NextNumber(0, 6.2)),
+						Color3.fromRGB(255, 200, 60), Enum.Material.Metal)
 				end
 			end
 		elseif roll < 0.88 then
-			local hh = rng:NextNumber(5, 10)
+			-- CHAMPIGNON v2 : pied cylindrique legerement courbe, chapeau bombe, lamelles claires
+			-- en dessous, pois clairs dessus, douce lumiere de la couleur du chapeau
 			local off = side * rng:NextNumber(12, 22)
-			local base = cf * CFrame.new(off, -RIDE_HEIGHT, 0)
-			if awayFromTrack(base.Position, d, 12) then
-				gp(Vector3.new(2.2, hh, 2.2), base * CFrame.new(0, hh / 2, 0), Color3.fromRGB(214, 198, 178), Enum.Material.SmoothPlastic)
-				local cap = gp(Vector3.new(hh * 1.3, hh * 0.55, hh * 1.3), base * CFrame.new(0, hh + hh * 0.2, 0), CRYS[rng:NextInteger(1, #CRYS)], Enum.Material.Neon)
+			local base = groundAt(cf, off, nil, nil, d)
+			if base and awayFromTrack(base.Position, d, 12) then
+				local hh = rng:NextNumber(6, 12)
+				local lean = rng:NextNumber(-0.12, 0.12)
+				local stem1 = gp(Vector3.new(hh * 0.55, 2.2, 2.2), base * CFrame.new(0, hh * 0.27, 0) * CFrame.Angles(0, 0, math.rad(90) + lean), Color3.fromRGB(222, 208, 188), Enum.Material.SmoothPlastic)
+				stem1.Shape = Enum.PartType.Cylinder
+				local stem2 = gp(Vector3.new(hh * 0.55, 1.8, 1.8), base * CFrame.new(lean * hh, hh * 0.75, 0) * CFrame.Angles(0, 0, math.rad(90) + lean * 2), Color3.fromRGB(214, 198, 178), Enum.Material.SmoothPlastic)
+				stem2.Shape = Enum.PartType.Cylinder
+				local cc = CRYS[rng:NextInteger(1, #CRYS)]
+				local capCF = base * CFrame.new(lean * hh * 1.6, hh + hh * 0.16, 0)
+				local cap = gp(Vector3.new(hh * 1.25, hh * 0.62, hh * 1.25), capCF, cc, Enum.Material.SmoothPlastic)
 				cap.Shape = Enum.PartType.Ball
-				local ml = Instance.new("PointLight"); ml.Range = 16; ml.Brightness = 0.8; ml.Color = cap.Color; ml.Parent = cap
+				local gills = gp(Vector3.new(0.5, hh * 0.95, hh * 0.95), capCF * CFrame.new(0, -hh * 0.18, 0) * CFrame.Angles(0, 0, math.rad(90)), Color3.fromRGB(245, 240, 230), Enum.Material.SmoothPlastic)
+				gills.Shape = Enum.PartType.Cylinder
+				for _ = 1, rng:NextInteger(3, 5) do
+					local dot = gp(Vector3.new(rng:NextNumber(0.7, 1.2), 0.3, rng:NextNumber(0.7, 1.2)), capCF * CFrame.new(rng:NextNumber(-hh * 0.4, hh * 0.4), hh * 0.24, rng:NextNumber(-hh * 0.4, hh * 0.4)), Color3.fromRGB(248, 244, 236), Enum.Material.SmoothPlastic)
+					dot.Shape = Enum.PartType.Ball
+				end
+				local ml = Instance.new("PointLight"); ml.Range = 14; ml.Brightness = 0.6; ml.Color = cc; ml.Parent = cap
 			end
 		else
-			local pcf = cf * CFrame.new(side * rng:NextNumber(10, 20), rng:NextNumber(24, 30), 0)
-			if awayFromTrack(pcf.Position, d, 16) then
-				gp(Vector3.new(3.2, rng:NextNumber(8, 14), 3.2), pcf, ROCK2, Enum.Material.Slate)
+			-- STALACTITE deco v2 : cone cylindrique accroche au VRAI plafond (raycast vers le haut)
+			local off = side * rng:NextNumber(8, 18)
+			local top = ceilingAt(cf, off, nil, nil, d)
+			if top and awayFromTrack(top.Position, d, 16) then
+				local h = rng:NextNumber(7, 13)
+				for seg = 1, 3 do
+					local fr = (seg - 1) / 3
+					local sh = h * 0.38
+					local sw = 3.2 * (1 - fr * 0.65)
+					local cyl = gp(Vector3.new(sh, sw, sw), top * CFrame.new(0, -(fr * h * 0.36 + sh / 2) + 1, 0) * CFrame.Angles(0, 0, math.rad(90)), ROCK2, Enum.Material.Slate)
+					cyl.Shape = Enum.PartType.Cylinder
+				end
 			end
 		end
 		d = d + rng:NextNumber(30, 52)
 	end
+	-- VERS LUISANTS : grappes de petits eclats Neon incrustes a la VOUTE (sans PointLight = tres
+	-- leger). La signature du monde : un ciel d'etoiles souterrain au-dessus de toute la voie.
+	d = 40
+	while d < TOTAL_DIST - 30 do
+		local cf = renderAtDistance(d)
+		local top = ceilingAt(cf, rng:NextNumber(-14, 14), nil, nil, d)
+		if top then
+			nWorm = nWorm + 1
+			local cc = (rng:NextNumber() < 0.6) and Color3.fromRGB(150, 245, 220) or Color3.fromRGB(140, 220, 255)
+			for _ = 1, rng:NextInteger(3, 6) do
+				gp(Vector3.new(rng:NextNumber(0.4, 0.9), rng:NextNumber(0.3, 0.6), rng:NextNumber(0.4, 0.9)),
+					top * CFrame.new(rng:NextNumber(-7, 7), rng:NextNumber(0, 1.5), rng:NextNumber(-7, 7)) * CFrame.Angles(rng:NextNumber(0, 6.2), rng:NextNumber(0, 6.2), rng:NextNumber(0, 6.2)),
+					cc, Enum.Material.Neon)
+			end
+		end
+		d = d + rng:NextNumber(26, 44)
+	end
+	-- PIECES MAITRESSES DES SALLES : chaque salle-cathedrale recoit son spectacle
+	for _, s in ipairs(salles) do
+		local scf = renderAtDistance(s.d)
+		local c1, c2 = s.tint[1], s.tint[2]
+		if s.kind == 1 then
+			-- CRISTAL GEANT en bouquet : un grand prisme central + satellites inclines
+			local off = ((rng:NextNumber() < 0.5) and 1 or -1) * rng:NextNumber(18, 30)
+			local base = groundAt(scf, off, nil, 110, s.d)
+			if base and awayFromTrack(base.Position, s.d, 13) then
+				nPiece = nPiece + 1
+				local H = rng:NextNumber(17, 26)
+				local main = gp(Vector3.new(4.6, H, 4.6), base * CFrame.new(0, H * 0.42, 0) * CFrame.Angles(rng:NextNumber(-0.16, 0.16), rng:NextNumber(0, 6.2), rng:NextNumber(-0.16, 0.16)), c1, Enum.Material.Neon)
+				for k = 1, rng:NextInteger(4, 6) do
+					local hh = H * rng:NextNumber(0.35, 0.6)
+					local ang = k * 1.1 + rng:NextNumber(0, 0.6)
+					gp(Vector3.new(rng:NextNumber(1.8, 2.8), hh, rng:NextNumber(1.8, 2.8)),
+						base * CFrame.new(math.cos(ang) * rng:NextNumber(3, 5.5), hh * 0.36, math.sin(ang) * rng:NextNumber(3, 5.5)) * CFrame.Angles(math.cos(ang) * 0.42, 0, math.sin(ang) * 0.42),
+						(k % 2 == 0) and c2 or c1, Enum.Material.Neon)
+				end
+				local gl = Instance.new("PointLight"); gl.Range = 60; gl.Brightness = 2; gl.Color = c1; gl.Parent = main
+			end
+		elseif s.kind == 2 then
+			-- LAC LUMINESCENT : nappe translucide + lueur sous l'eau + cristaux emergents + brume
+			local base = groundAt(scf, ((rng:NextNumber() < 0.5) and 1 or -1) * rng:NextNumber(14, 24), nil, 110, s.d)
+			if base then
+				nPiece = nPiece + 1
+				local R = s.r * rng:NextNumber(0.5, 0.68)
+				local lake = gp(Vector3.new(1, R * 2, R * 2), base * CFrame.new(0, 0.35, 0) * CFrame.Angles(0, 0, math.rad(90)), c1, Enum.Material.Glass)
+				lake.Shape = Enum.PartType.Cylinder
+				lake.Transparency = 0.42
+				local und = gp(Vector3.new(0.4, R * 1.7, R * 1.7), base * CFrame.new(0, 0.05, 0) * CFrame.Angles(0, 0, math.rad(90)), c1, Enum.Material.Neon)
+				und.Shape = Enum.PartType.Cylinder
+				und.Transparency = 0.35
+				for _ = 1, rng:NextInteger(3, 5) do
+					local hh = rng:NextNumber(4, 9)
+					gp(Vector3.new(rng:NextNumber(1.4, 2.2), hh, rng:NextNumber(1.4, 2.2)),
+						base * CFrame.new(rng:NextNumber(-R * 0.6, R * 0.6), hh * 0.4, rng:NextNumber(-R * 0.6, R * 0.6)) * CFrame.Angles(rng:NextNumber(-0.3, 0.3), rng:NextNumber(0, 6.2), rng:NextNumber(-0.3, 0.3)),
+						c2, Enum.Material.Neon)
+				end
+				local mist = Instance.new("ParticleEmitter")
+				mist.Color = ColorSequence.new(c1)
+				mist.Size = NumberSequence.new(4, 8)
+				mist.Transparency = NumberSequence.new(0.75, 1)
+				mist.Lifetime = NumberRange.new(1.6, 2.6); mist.Rate = 8; mist.Speed = NumberRange.new(0.5, 1.5)
+				mist.SpreadAngle = Vector2.new(80, 80); mist.Parent = lake
+				local gl = Instance.new("PointLight"); gl.Range = 60; gl.Brightness = 1.5; gl.Color = c1; gl.Parent = lake
+			end
+		else
+			-- FORET DE CHAMPIGNONS GEANTS : 3-4 specimens enormes aux couleurs de la salle
+			for m = 1, rng:NextInteger(3, 4) do
+				local off = ((m % 2 == 0) and 1 or -1) * rng:NextNumber(13, 26)
+				local base = groundAt(scf, off, rng:NextNumber(-s.r * 0.4, s.r * 0.4), 110, s.d)
+				if base and awayFromTrack(base.Position, s.d, 12) then
+					local hh = rng:NextNumber(12, 18)
+					local cc = (m % 2 == 0) and c1 or c2
+					local stem = gp(Vector3.new(hh * 0.8, 2.8, 2.8), base * CFrame.new(0, hh * 0.4, 0) * CFrame.Angles(0, 0, math.rad(90)), Color3.fromRGB(222, 208, 188), Enum.Material.SmoothPlastic)
+					stem.Shape = Enum.PartType.Cylinder
+					local cap = gp(Vector3.new(hh * 1.2, hh * 0.55, hh * 1.2), base * CFrame.new(0, hh, 0), cc, Enum.Material.Neon)
+					cap.Shape = Enum.PartType.Ball
+					local gl = Instance.new("PointLight"); gl.Range = 40; gl.Brightness = 0.9; gl.Color = cc; gl.Parent = cap
+				end
+			end
+		end
+		-- VOUTE ETOILEE DENSE de la salle : le dome se couvre de vers luisants aux couleurs du lieu
+		for _ = 1, 22 do
+			local top = ceilingAt(scf, rng:NextNumber(-s.r * 0.5, s.r * 0.5), rng:NextNumber(-s.r * 0.5, s.r * 0.5), 120, s.d)
+			if top then
+				local cc = (rng:NextNumber() < 0.5) and s.tint[1] or s.tint[2]
+				for _ = 1, rng:NextInteger(2, 4) do
+					gp(Vector3.new(rng:NextNumber(0.4, 0.9), rng:NextNumber(0.3, 0.6), rng:NextNumber(0.4, 0.9)),
+						top * CFrame.new(rng:NextNumber(-6, 6), rng:NextNumber(0, 1.5), rng:NextNumber(-6, 6)) * CFrame.Angles(rng:NextNumber(0, 6.2), rng:NextNumber(0, 6.2), rng:NextNumber(0, 6.2)),
+						cc, Enum.Material.Neon)
+				end
+			end
+		end
+	end
+	-- GARDIENS DE L'ENTREE : deux grands cristaux cyan de part et d'autre de la bouche
+	do
+		local cf0e = renderAtDistance(8)
+		for _, sx in ipairs({ -1, 1 }) do
+			local base = groundAt(cf0e, sx * 17, nil, nil, 8)
+			if base then
+				local H = rng:NextNumber(13, 17)
+				local cr = gp(Vector3.new(3.6, H, 3.6), base * CFrame.new(0, H * 0.42, 0) * CFrame.Angles(sx * 0.12, 0, -sx * 0.14), Color3.fromRGB(110, 235, 255), Enum.Material.Neon)
+				local gl = Instance.new("PointLight"); gl.Range = 34; gl.Brightness = 1.2; gl.Color = Color3.fromRGB(110, 235, 255); gl.Parent = cr
+			end
+		end
+	end
+	-- TOILES D'ARAIGNEE : disque translucide + rayons, accrochees a la voute
+	d = 260
+	while d < TOTAL_DIST - 80 do
+		local cf = renderAtDistance(d)
+		local top = ceilingAt(cf, ((rng:NextNumber() < 0.5) and 1 or -1) * rng:NextNumber(8, 16), nil, nil, d)
+		if top then
+			nWeb = nWeb + 1
+			local wr = rng:NextNumber(4, 7)
+			local web = gp(Vector3.new(0.18, wr * 2, wr * 2), top * CFrame.new(0, 0.6, 0) * CFrame.Angles(rng:NextNumber(-0.3, 0.3), 0, math.rad(90) + rng:NextNumber(-0.3, 0.3)), Color3.fromRGB(235, 235, 240), Enum.Material.SmoothPlastic)
+			web.Shape = Enum.PartType.Cylinder
+			web.Transparency = 0.62
+			for k = 1, 5 do
+				local spk = gp(Vector3.new(wr * 2.2, 0.12, 0.25), top * CFrame.new(0, 0.55, 0) * CFrame.Angles(0, k * 0.628 + rng:NextNumber(0, 0.4), 0), Color3.fromRGB(240, 240, 245), Enum.Material.SmoothPlastic)
+				spk.Transparency = 0.45
+			end
+		end
+		d = d + rng:NextNumber(300, 460)
+	end
+	-- ARAIGNEES : elles PATROUILLENT le long des parois (animation dans la boucle TRAP)
+	d = 380
+	while d < TOTAL_DIST - 100 do
+		local cf = renderAtDistance(d)
+		local sside = (rng:NextNumber() < 0.5) and 1 or -1
+		local sbase = cf * CFrame.new(sside * 21, rng:NextNumber(7, 14), 0) * CFrame.Angles(0, (sside > 0) and math.rad(-90) or math.rad(90), 0)
+		local sparts = {}
+		local function spart(size, loc, color, shape)
+			local pp = gp(size, sbase * loc, color, Enum.Material.SmoothPlastic)
+			if shape then pp.Shape = shape end
+			table.insert(sparts, { part = pp, off = loc })
+			return pp
+		end
+		spart(Vector3.new(2.4, 1.6, 3), CFrame.new(0, 0, 0.6), Color3.fromRGB(26, 22, 32), Enum.PartType.Ball)       -- abdomen
+		spart(Vector3.new(1.5, 1.2, 1.5), CFrame.new(0, 0.1, -1.2), Color3.fromRGB(32, 26, 38), Enum.PartType.Ball)  -- tete
+		spart(Vector3.new(0.25, 0.25, 0.25), CFrame.new(-0.35, 0.45, -1.75), Color3.fromRGB(255, 70, 60))            -- oeil gauche
+		spart(Vector3.new(0.25, 0.25, 0.25), CFrame.new(0.35, 0.45, -1.75), Color3.fromRGB(255, 70, 60))             -- oeil droit
+		for li = -1, 1, 2 do
+			for lk = 0, 2 do
+				spart(Vector3.new(2.6, 0.18, 0.18), CFrame.new(li * 1.6, -0.2, -0.8 + lk * 0.9) * CFrame.Angles(0, 0, li * 0.5), Color3.fromRGB(20, 18, 26), Enum.PartType.Cylinder)
+			end
+		end
+		table.insert(SPIDERS, { parts = sparts, base = sbase, off = rng:NextNumber(0, 6.2), amp = rng:NextNumber(4, 8), spd = rng:NextNumber(0.5, 0.9) })
+		d = d + rng:NextNumber(420, 700)
+	end
+	print(string.format("[GROTTE-DIAG] salles=%d piecesPosees=%d | sol OK=%d KO=%d | plafond OK=%d KO=%d | worms=%d toiles=%d araignees=%d",
+		#salles, nPiece, nGroundOk, nGroundKo, nCeilOk, nCeilKo, nWorm, nWeb, #SPIDERS))
 	-- CASCADES souterraines : rideau d'eau de la paroi au sol + bassin lumineux + brume
 	d = 380
 	while d < TOTAL_DIST - 120 do
@@ -1555,7 +1832,8 @@ local function buildGrotteDecor()
 		if not awayFromTrack((cf * CFrame.new(wx, 8, 0)).Position, d, 16) then d = d + 90 ; continue end
 		local fall = gp(Vector3.new(6, 30, 2.2), cf * CFrame.new(wx, 10, 0), Color3.fromRGB(120, 200, 255), Enum.Material.Glass)
 		fall.Transparency = 0.35
-		local pool = gp(Vector3.new(14, 1, 12), cf * CFrame.new(wx, -RIDE_HEIGHT + 0.4, 0), Color3.fromRGB(110, 200, 255), Enum.Material.Neon)
+		local poolBase = groundAt(cf, wx, nil, nil, d) or cf * CFrame.new(wx, -RIDE_HEIGHT, 0)
+		local pool = gp(Vector3.new(14, 1, 12), poolBase * CFrame.new(0, 0.4, 0), Color3.fromRGB(110, 200, 255), Enum.Material.Neon)
 		pool.Transparency = 0.2
 		local mist = Instance.new("ParticleEmitter")
 		mist.Color = ColorSequence.new(Color3.fromRGB(200, 235, 255))
@@ -1572,8 +1850,9 @@ local function buildGrotteDecor()
 		local cf = renderAtDistance(d)
 		if math.abs(cf.UpVector.Y) > 0.95 then
 			local side = (rng:NextNumber() < 0.5) and 1 or -1
-			local base = cf * CFrame.new(side * rng:NextNumber(13, 20), -RIDE_HEIGHT + 1.4, 0) * CFrame.Angles(0, rng:NextNumber(0, 6.2), 0)
-			if not awayFromTrack(base.Position, d, 14) then d = d + 120 ; continue end
+			local gbase = groundAt(cf, side * rng:NextNumber(13, 20), nil, nil, d)
+			if not gbase or not awayFromTrack(gbase.Position, d, 14) then d = d + 120 ; continue end
+			local base = gbase * CFrame.new(0, 1.4, 0) * CFrame.Angles(0, rng:NextNumber(0, 6.2), 0)
 			gp(Vector3.new(5.5, 2.6, 3.6), base, Color3.fromRGB(96, 66, 46), Enum.Material.Wood)
 			for _, wz in ipairs({ -1.4, 1.4 }) do
 				for _, wxx in ipairs({ -2, 2 }) do
@@ -1607,6 +1886,7 @@ end
 local function buildDecor()
 	decorFolder:ClearAllChildren()
 	BATS = {}   -- nuees de chauves-souris : remplies par la grotte, vide ailleurs (anim : boucle TRAP)
+	SPIDERS = {}   -- araignees qui patrouillent les parois (grotte) ; GLOBAL, anim : boucle TRAP
 	buildDecorProps()
 	buildLandmarks()
 	backdrop(CURRENT_ZONE)
@@ -3220,14 +3500,7 @@ local function buildEconomy()
 			setWallet(player); updateLeaderstats(player)
 			if player then flashCenter(player, "🧪 TEST : +1 000 000 pieces", Color3.fromRGB(255, 210, 90), 2) end
 		end, "🧪 +1M (TEST)")
-		-- pad TEST : saute direct au MONDE SUIVANT (tester les biomes sans finir le circuit).
-		-- advanceWorldFn = alias global rempli plus bas (advanceWorld est defini apres nous).
-		buyPad(CFrame.new(40, -2.4, 18), Color3.fromRGB(180, 120, 255), function(player)
-			if advanceWorldFn then
-				if player then flashCenter(player, "🧪 TEST : MONDE SUIVANT !", Color3.fromRGB(210, 160, 255), 2) end
-				advanceWorldFn(player)
-			end
-		end, "🧪 MONDE SUIVANT (TEST)")
+		-- (le pad MONDE SUIVANT a ete remplace par le menu 🌍 MONDES a l'ecran, reserve aux admins)
 	end
 end
 buildEconomy()
@@ -3275,14 +3548,16 @@ local rebuilding = false
 
 -- advanceWorld : fin du circuit -> on passe TOUT LE MONDE au monde suivant (decor partage).
 -- Ejecte TOUS les conducteurs, reconstruit le monde UNE fois, puis replace+rassoit chaque joueur.
-local function advanceWorld(triggerPlayer)
+local function advanceWorld(triggerPlayer, targetW)
+	-- targetW (optionnel) = numero de monde ABSOLU demande par le menu admin -> teleportation directe
 	if rebuilding then return end
 	rebuilding = true
-	local nextW = currentWorldIndex + 1
+	local nextW = targetW or (currentWorldIndex + 1)
 	local cfg = worldCfg(nextW)
 	-- felicitations a tout le monde (le monde change pour tous)
 	for _, gg in pairs(guis) do
-		gg.Center.Text = "✅ NIVEAU REUSSI !   →   MONDE " .. nextW .. " : " .. cfg.name
+		gg.Center.Text = targetW and ("🌍 TÉLÉPORTATION   →   MONDE " .. nextW .. " : " .. cfg.name)
+			or ("✅ NIVEAU REUSSI !   →   MONDE " .. nextW .. " : " .. cfg.name)
 		gg.Center.TextColor3 = Color3.fromRGB(255, 225, 110)
 		local txt = gg.Center.Text
 		task.delay(4, function() if gg and gg.Center.Text == txt then gg.Center.Text = "" end end)
@@ -3326,6 +3601,15 @@ local function advanceWorld(triggerPlayer)
 	task.delay(0.7, function() rebuilding = false end)
 end
 advanceWorldFn = advanceWorld   -- alias GLOBAL : pour les pads crees AVANT cette ligne (piege "ordre des fonctions")
+
+-- MENU MONDES (admin seulement) : teleporte TOUT le serveur vers le monde choisi (1..#WORLDS).
+askWorldRE.OnServerEvent:Connect(function(plr, widx)
+	if not (plr and ADMINS[plr.Name]) then return end
+	if typeof(widx) ~= "number" then return end
+	widx = math.floor(widx)
+	if widx < 1 or widx > #WORLDS then return end
+	advanceWorld(plr, widx)
+end)
 
 -- ===================== RAILS FANTOMES : cycle apparition / disparition =====================
 -- Les parties de voie taggees "Phantom" (cyan) clignotent puis DISPARAISSENT en rythme.
@@ -3454,6 +3738,19 @@ RunService.Heartbeat:Connect(function(dt)
 					b.wl.CFrame = bodyCF * CFrame.new(-1.25, 0.15, 0) * CFrame.Angles(0, 0, flap)
 					b.wr.CFrame = bodyCF * CFrame.new(1.25, 0.15, 0) * CFrame.Angles(0, 0, -flap)
 				end
+			end
+		end
+	end
+	-- ARAIGNEES (grotte) : va-et-vient le long de leur paroi + petit tremblement de marche
+	if SPIDERS then
+		for _, sp in ipairs(SPIDERS) do
+			local zoff = math.sin(TRAP_T * sp.spd + sp.off) * sp.amp
+			local dir = math.cos(TRAP_T * sp.spd + sp.off)
+			local face = (dir >= 0) and 0 or math.pi
+			local bob = math.abs(math.sin(TRAP_T * 6 + sp.off)) * 0.15
+			local root = sp.base * CFrame.new(0, bob, zoff) * CFrame.Angles(0, face, 0)
+			for _, pp in ipairs(sp.parts) do
+				if pp.part.Parent then pp.part.CFrame = root * pp.off end
 			end
 		end
 	end
